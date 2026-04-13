@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+*.tsbuildinfo
+
+# editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# logs / runtime
+*.log
+.env
+.env.local
+.env.*.local
+
+# bun
+bun.lock
+.bun/
