@@ -18,5 +18,4 @@ dist/
 .env.*.local
 
 # bun
-bun.lock
 .bun/
