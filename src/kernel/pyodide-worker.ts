@@ -113,6 +113,17 @@ import contextlib
 # Users can still override via os.environ['MPLBACKEND'] = ... in a cell.
 os.environ.setdefault('MPLBACKEND', 'Agg')
 
+# Under Agg, plt.show() emits a UserWarning ("FigureCanvasAgg is
+# non-interactive, and thus cannot be shown."). __notebook_post_execute
+# already inlines any open figure; the warning is just noise. Suppress it
+# at registration time so it's filtered before any matplotlib import.
+import warnings
+warnings.filterwarnings(
+    'ignore',
+    message=r'.*FigureCanvasAgg is non-interactive.*',
+    category=UserWarning,
+)
+
 # ── static analysis ──────────────────────────────────────────────────────
 
 _PY_BUILTINS = set(dir(_builtins))
