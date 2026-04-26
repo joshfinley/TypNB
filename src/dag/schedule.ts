@@ -1,22 +1,41 @@
 import type { DagNode } from "./types.ts";
 
 /**
+ * Thrown by topoSort when the dependency graph has a cycle. `cells` is the
+ * ordered list of ids forming the cycle (first id repeats at the end).
+ */
+export class CycleError extends Error {
+  readonly cells: readonly string[];
+  constructor(cells: readonly string[]) {
+    super(`cycle through cells: ${cells.join(" → ")}`);
+    this.name = "CycleError";
+    this.cells = cells;
+  }
+}
+
+/**
  * Topologically sort cells into a valid execution order.
- * Throws on cycles — the parser/analyser must produce a DAG.
+ * Throws CycleError on cycles, with the cycle members attached.
  */
 export function topoSort(nodes: ReadonlyMap<string, DagNode>): string[] {
   const result: string[] = [];
   const tempMark = new Set<string>();
   const permMark = new Set<string>();
+  const path: string[] = [];
 
   const visit = (id: string): void => {
     if (permMark.has(id)) return;
-    if (tempMark.has(id)) throw new Error(`cycle through cell ${id}`);
+    if (tempMark.has(id)) {
+      const start = path.indexOf(id);
+      throw new CycleError([...path.slice(start), id]);
+    }
     tempMark.add(id);
+    path.push(id);
     const node = nodes.get(id);
     if (node) {
       for (const dep of node.upstream) visit(dep);
     }
+    path.pop();
     tempMark.delete(id);
     permMark.add(id);
     result.push(id);

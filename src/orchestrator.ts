@@ -19,7 +19,7 @@
 import { parseCells } from "./parser/parse.ts";
 import type { Cell } from "./parser/types.ts";
 import { buildDag } from "./dag/build.ts";
-import { topoSort, downstreamClosure } from "./dag/schedule.ts";
+import { topoSort, downstreamClosure, CycleError } from "./dag/schedule.ts";
 import type { CellAnalysis, CellState, NodeStatus } from "./dag/types.ts";
 import type { Kernel, MimeBundle, OutputEvent } from "./kernel/types.ts";
 import { AdapterRegistry } from "./adapters/registry.ts";
@@ -53,6 +53,7 @@ export class Orchestrator {
   private inflight: Promise<void> | null = null;
   private pendingSource: string | null = null;
   private knownHash = new Map<string, string>(); // cellId → last hash
+  private prevWrites = new Map<string, ReadonlySet<string>>(); // cellId → last analysis.writes
 
   constructor(
     private readonly kernel: Kernel,
@@ -91,9 +92,14 @@ export class Orchestrator {
   private async runOnce(source: string): Promise<void> {
     this.currentSource = source;
     const cells = await parseCells(source);
+    const cellIds = new Set(cells.map((c) => c.id));
 
     if (cells.length === 0) {
-      // No cells → just hand the source through unchanged.
+      // No cells → just hand the source through unchanged. Clear stale state
+      // so subsequent runs don't reuse outputs from cells the user deleted.
+      this.outputCache.clear();
+      this.knownHash.clear();
+      this.prevWrites.clear();
       this.events.onAugmentedSource(source);
       this.events.onStatus([]);
       return;
@@ -123,20 +129,66 @@ export class Orchestrator {
       analyses.set(cell.id, a);
     }
 
-    // 2. build DAG, find what's stale
+    // 2. invalidate readers when the structure of writes shifts. Captures:
+    //   - a writer was deleted (its old symbols are now provided by an
+    //     earlier writer, or by no one)
+    //   - a cell's writes set shrank or grew
+    //   - a cell that used to write a symbol no longer does
+    // Without this, hash-only invalidation misses topology changes that
+    // weren't a direct edit to the affected reader.
+    const symsTouched = new Set<string>();
+    for (const cell of cells) {
+      const prev = this.prevWrites.get(cell.id);
+      const curr = analyses.get(cell.id)!.writes;
+      if (!setsEqual(prev, curr)) {
+        if (prev) for (const s of prev) symsTouched.add(s);
+        for (const s of curr) symsTouched.add(s);
+      }
+    }
+    for (const [id, prev] of this.prevWrites) {
+      if (!cellIds.has(id)) for (const s of prev) symsTouched.add(s);
+    }
+    if (symsTouched.size > 0) {
+      for (const cell of cells) {
+        const a = analyses.get(cell.id)!;
+        for (const r of a.reads) {
+          if (symsTouched.has(r)) {
+            changed.add(cell.id);
+            break;
+          }
+        }
+      }
+    }
+
+    // 3. build DAG, find what's stale
     const dag = buildDag(cells, analyses);
     const stale = downstreamClosure(dag, changed);
 
-    // 3. re-execute stale cells in topo order
-    const order = topoSort(dag);
+    // 4. topo-order; on cycle, mark cycle members as error and run the rest.
+    let order: string[];
+    let cycleMembers: ReadonlySet<string> = new Set();
+    try {
+      order = topoSort(dag);
+    } catch (err) {
+      if (!(err instanceof CycleError)) throw err;
+      cycleMembers = new Set(err.cells);
+      // Schedule everything outside the cycle in a stable order; cycle members
+      // are reported but not executed.
+      order = cells.filter((c) => !cycleMembers.has(c.id)).map((c) => c.id);
+    }
+
+    // 5. re-execute stale cells in topo order
+    const cellById = new Map(cells.map((c) => [c.id, c]));
     const statuses: NodeStatus[] = [];
     for (const cellId of order) {
-      const cell = cells.find((c) => c.id === cellId);
+      const cell = cellById.get(cellId);
       if (!cell) continue;
       let result = this.outputCache.get(cellId);
       if (stale.has(cellId) || !result) {
-        // mark running before executing
-        this.events.onStatus(buildStatuses(cells, this.outputCache, cellId, "running"));
+        // mark running before executing — but only if our source is still current
+        if (source === this.currentSource) {
+          this.events.onStatus(buildStatuses(cells, this.outputCache, cellId, "running", cycleMembers));
+        }
         result = await this.runCell(cell);
         this.outputCache.set(cellId, result);
       }
@@ -147,8 +199,24 @@ export class Orchestrator {
         ...(result.errorMessage ? { error: result.errorMessage } : {}),
       });
     }
+    // Append cycle members as error statuses.
+    for (const cellId of cycleMembers) {
+      statuses.push({
+        cellId,
+        state: "error",
+        error: `cycle: ${[...cycleMembers].join(" → ")}`,
+      });
+    }
 
-    // 4. emit augmented source + final statuses
+    // 6. evict caches for cells/hashes that no longer exist
+    const liveHashes = new Set(cells.map((c) => c.hash));
+    for (const id of this.outputCache.keys()) if (!cellIds.has(id)) this.outputCache.delete(id);
+    for (const id of this.knownHash.keys()) if (!cellIds.has(id)) this.knownHash.delete(id);
+    for (const h of this.analysisCache.keys()) if (!liveHashes.has(h)) this.analysisCache.delete(h);
+    this.prevWrites.clear();
+    for (const cell of cells) this.prevWrites.set(cell.id, analyses.get(cell.id)!.writes);
+
+    // 7. emit augmented source + final statuses
     if (source === this.currentSource) {
       this.events.onAugmentedSource(this.augment(source, cells));
       this.events.onStatus(statuses);
@@ -222,14 +290,23 @@ function buildStatuses(
   cache: ReadonlyMap<string, CellRunResult>,
   runningId: string,
   runningState: CellState,
+  cycleMembers: ReadonlySet<string>,
 ): NodeStatus[] {
   return cells.map((c) => {
+    if (cycleMembers.has(c.id)) return { cellId: c.id, state: "error" as CellState };
     if (c.id === runningId) return { cellId: c.id, state: runningState };
     const r = cache.get(c.id);
     return r
       ? { cellId: c.id, state: r.state, ...(r.durationMs ? { durationMs: r.durationMs } : {}) }
       : { cellId: c.id, state: "idle" as CellState };
   });
+}
+
+function setsEqual(a: ReadonlySet<string> | undefined, b: ReadonlySet<string>): boolean {
+  if (!a) return false;
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
 }
 
 function applyEvent(

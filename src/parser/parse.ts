@@ -22,12 +22,23 @@ export async function parseCells(source: string): Promise<Cell[]> {
   const cells: Cell[] = [];
   CELL_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
-  let auto = 0;
+  // Disambiguate auto-derived ids when two cells share (lang, body). Explicit
+  // ids are passed through unchanged — duplicates there are user error.
+  const autoSeen = new Map<string, number>();
   while ((match = CELL_RE.exec(source)) !== null) {
     const [whole, idArg, langArg, body] = match;
     if (langArg === undefined || body === undefined) continue;
-    const id = idArg ?? `cell-${++auto}`;
     const lang = langArg as CellLang;
+    const hash = await sha256(`${lang}\0${body}`);
+    let id: string;
+    if (idArg !== undefined) {
+      id = idArg;
+    } else {
+      const base = `cell-${hash.slice(0, 8)}`;
+      const n = autoSeen.get(base) ?? 0;
+      autoSeen.set(base, n + 1);
+      id = n === 0 ? base : `${base}-${n}`;
+    }
     const start = match.index;
     const end = start + whole.length;
     const bodyStart = source.indexOf(body, start);
@@ -39,7 +50,7 @@ export async function parseCells(source: string): Promise<Cell[]> {
       source: body,
       range,
       bodyRange,
-      hash: await sha256(`${lang}\0${body}`),
+      hash,
     });
   }
   return cells;
