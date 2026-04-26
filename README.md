@@ -89,8 +89,9 @@ loud, never silent. Adding an adapter is a few hundred lines against
 ## Dev-loop conveniences
 
 - **Client error sink.** `src/dev/client-log.ts` mirrors `window.onerror`,
-  `unhandledrejection`, `console.{error,warn}`, and Rust-style diagnostics
-  (typst.ts) to the Vite dev terminal. Production builds strip this.
+  `unhandledrejection`, and `console.{error,warn}` to the Vite dev terminal.
+  Production builds strip this. There's an explicit `devLog()` helper for
+  any diagnostic that needs forwarding without going through `console`.
 - **Worker error forwarding.** `PyodideKernel` listens on `worker.error` and
   re-emits via `console.error`, so worker crashes also reach the dev sink.
 

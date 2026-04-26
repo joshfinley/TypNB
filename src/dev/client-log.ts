@@ -3,7 +3,13 @@
  *
  * Captures `window.onerror`, `unhandledrejection`, and console.{warn,error}
  * and POSTs them to /__client_log, where the Vite middleware prints them to
- * the dev server terminal. Stripped from production builds via import.meta.env.DEV.
+ * the dev server terminal. Stripped from production via import.meta.env.DEV.
+ *
+ * Deliberately does NOT patch console.log: the previous implementation
+ * forwarded any console.log message matching `/error:/i` to the dev server,
+ * which silently exfiltrated user/library logs (Python tracebacks, HTTP
+ * messages, etc.). If you have a diagnostic that genuinely belongs in the
+ * dev terminal, route it explicitly through `devLog()`.
  */
 
 interface LogPayload {
@@ -22,6 +28,16 @@ function send(payload: LogPayload): void {
   } else {
     void fetch("/__client_log", { method: "POST", body, headers: { "Content-Type": "application/json" } });
   }
+}
+
+/**
+ * Explicit channel for forwarding a message to the dev terminal. Use this
+ * instead of relying on a global console patch — call sites are then
+ * grep-able and the patch surface stays minimal.
+ */
+export function devLog(level: "error" | "warn" | "log", message: string, stack?: string): void {
+  if (!import.meta.env.DEV) return;
+  send({ level, message, ...(stack ? { stack } : {}) });
 }
 
 export function installClientLogger(): void {
@@ -44,6 +60,9 @@ export function installClientLogger(): void {
     send({ level: "error", message: `unhandledrejection: ${message}`, stack: stack ?? undefined });
   });
 
+  // Mirror console.error / console.warn — these are intentional, low-traffic
+  // diagnostic calls inside our own code. We do NOT mirror console.log; see
+  // the module-level comment.
   const origError = console.error.bind(console);
   console.error = (...args: unknown[]) => {
     send({ level: "error", message: args.map(stringify).join(" ") });
@@ -55,25 +74,6 @@ export function installClientLogger(): void {
     send({ level: "warn", message: args.map(stringify).join(" ") });
     origWarn(...args);
   };
-
-  // typst.ts (and other Rust-via-WASM toolchains) emit diagnostics through
-  // console.log. Mirror anything that *looks* like a Rust diagnostic.
-  const origLog = console.log.bind(console);
-  console.log = (...args: unknown[]) => {
-    const msg = args.map(stringify).join(" ");
-    if (looksLikeDiagnostic(msg)) {
-      send({ level: "error", message: msg });
-    }
-    origLog(...args);
-  };
-}
-
-function looksLikeDiagnostic(msg: string): boolean {
-  return (
-    msg.includes("SourceDiagnostic") ||
-    msg.includes("severity: Error") ||
-    /\berror:\s/i.test(msg)
-  );
 }
 
 function stringify(v: unknown): string {
