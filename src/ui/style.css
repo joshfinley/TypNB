@@ -54,6 +54,54 @@ body { font: 13px/1.4 var(--sans); color: var(--text); background: var(--bg); }
 .cells-status .cell-dot[data-state="error"] { background: var(--err); }
 .cells-status .cell-dot[data-state="idle"] { background: #d1d5db; opacity: 0.5; }
 
+/* Syntax highlighting — paired with classHighlighter from @lezer/highlight.
+   These class names are emitted by both the editor's syntaxHighlighting
+   extension (Typst tokens) and the python-highlight decorations (Python
+   tokens inside cell bodies). Single source of truth for editor colours. */
+.cm-editor .tok-comment,
+.cm-editor .tok-lineComment,
+.cm-editor .tok-blockComment { color: #6b6a75; font-style: italic; }
+.cm-editor .tok-string,
+.cm-editor .tok-docString,
+.cm-editor .tok-character { color: #16a34a; }
+.cm-editor .tok-keyword,
+.cm-editor .tok-controlKeyword,
+.cm-editor .tok-operatorKeyword,
+.cm-editor .tok-definitionKeyword,
+.cm-editor .tok-moduleKeyword,
+.cm-editor .tok-self { color: #7c3aed; font-weight: 500; }
+.cm-editor .tok-number,
+.cm-editor .tok-integer,
+.cm-editor .tok-float { color: #b91c1c; }
+.cm-editor .tok-bool,
+.cm-editor .tok-null,
+.cm-editor .tok-atom { color: #b45309; }
+.cm-editor .tok-typeName,
+.cm-editor .tok-className { color: #2563eb; }
+.cm-editor .tok-propertyName { color: #19181f; }
+.cm-editor .tok-variableName { color: #19181f; }
+.cm-editor .tok-function { color: #2563eb; }
+.cm-editor .tok-meta,
+.cm-editor .tok-annotation,
+.cm-editor .tok-processingInstruction { color: #ca8a04; }
+.cm-editor .tok-operator,
+.cm-editor .tok-punctuation,
+.cm-editor .tok-derefOperator,
+.cm-editor .tok-arithmeticOperator,
+.cm-editor .tok-logicOperator,
+.cm-editor .tok-bitwiseOperator,
+.cm-editor .tok-compareOperator { color: #6b6a75; }
+.cm-editor .tok-heading,
+.cm-editor .tok-heading1,
+.cm-editor .tok-heading2,
+.cm-editor .tok-heading3,
+.cm-editor .tok-heading4 { color: #19181f; font-weight: 700; }
+.cm-editor .tok-emphasis { font-style: italic; }
+.cm-editor .tok-strong { font-weight: 700; }
+.cm-editor .tok-link,
+.cm-editor .tok-url { color: #2563eb; text-decoration: underline; }
+.cm-editor .tok-invalid { color: var(--err); text-decoration: underline wavy; }
+
 /* Faint visual delineation for cell regions. Pure decoration —
    not part of the source, doesn't get copied. */
 .cm-cell-line {

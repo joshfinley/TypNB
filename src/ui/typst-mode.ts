@@ -72,20 +72,19 @@ export const typstParser: StreamParser<State> = {
     if (stream.match(/"(?:[^"\\]|\\.)*"/)) return "string";
 
     // Headings: leading run of `=` followed by space. Only valid at start
-    // of a line; check column.
+    // of a line; check column. StreamLanguage maps "header" → tags.heading.
     if (stream.column() === 0 && stream.match(/=+\s/)) {
-      // Mark as heading; consume the rest of the line as heading text
-      // so prose inside the heading isn't subject to other rules.
       stream.skipToEnd();
-      return "heading";
+      return "header";
     }
 
     // # function/variable references — `#fn(...)`, `#var`, `#let`, ...
     if (stream.match(/#/)) {
       // Keyword forms
       if (stream.match(TYPST_KEYWORD)) return "keyword";
-      // Identifier (function call or variable reference)
-      if (stream.match(/[a-zA-Z_][a-zA-Z0-9_-]*/)) return "variableName";
+      // Identifier (function call or variable reference). StreamLanguage
+      // maps "variable" → tags.variableName.
+      if (stream.match(/[a-zA-Z_][a-zA-Z0-9_-]*/)) return "variable";
       return "operator";
     }
 

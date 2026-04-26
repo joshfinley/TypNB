@@ -16,10 +16,10 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import {
   bracketMatching,
-  defaultHighlightStyle,
   indentOnInput,
   syntaxHighlighting,
 } from "@codemirror/language";
+import { classHighlighter } from "@lezer/highlight";
 import { typstLanguage } from "./typst-mode.ts";
 import { pythonHighlight, setPyBodiesEffect } from "./python-highlight.ts";
 
@@ -188,7 +188,9 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
         indentOnInput(),
         highlightSelectionMatches(),
         typstLanguage,
-        syntaxHighlighting(defaultHighlightStyle),
+        // classHighlighter emits `tok-*` class names; the CSS for those
+        // lives in src/ui/style.css alongside the editor chrome rules.
+        syntaxHighlighting(classHighlighter),
         keymap.of([...extras, indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
         EditorView.updateListener.of((v) => {
           if (v.docChanged) opts.onChange(v.state.doc.toString());

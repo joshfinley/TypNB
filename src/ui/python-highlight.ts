@@ -21,9 +21,8 @@ import {
   StateEffect,
   StateField,
 } from "@codemirror/state";
-import { defaultHighlightStyle } from "@codemirror/language";
 import { parser as pythonParser } from "@lezer/python";
-import { highlightTree } from "@lezer/highlight";
+import { classHighlighter, highlightTree } from "@lezer/highlight";
 
 export interface PyCellBody {
   readonly from: number;
@@ -62,7 +61,10 @@ function buildPyDecorations(
     if (body.to <= body.from) continue;
     const text = state.sliceDoc(body.from, body.to);
     const tree = pythonParser.parse(text);
-    highlightTree(tree, defaultHighlightStyle, (from, to, classes) => {
+    // classHighlighter emits concrete `tok-*` class names (debuggable in
+    // DevTools, fixed across builds). Pair with the .tok-* CSS rules in
+    // style.css for the visual styling.
+    highlightTree(tree, classHighlighter, (from, to, classes) => {
       const start = body.from + from;
       const end = body.from + to;
       if (end > start) {
