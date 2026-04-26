@@ -10,6 +10,7 @@ const cell = (id: string): Cell => ({
   range: { start: 0, end: 0 },
   bodyRange: { start: 0, end: 0 },
   hash: id,
+  lazy: false,
 });
 
 const analysis = (reads: string[], writes: string[]): CellAnalysis => ({

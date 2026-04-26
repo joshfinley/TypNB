@@ -28,4 +28,11 @@ export interface Cell {
    * Equals SHA-256 of (lang + "\0" + source), populated by the parser.
    */
   readonly hash: string;
+  /**
+   * When true, the cell skips re-execution on upstream changes — its
+   * cached output is reused. Only the cell's own source change OR an
+   * explicit user trigger invalidates it. Mark expensive loaders/queries
+   * lazy so downstream edits don't re-trigger them.
+   */
+  readonly lazy: boolean;
 }

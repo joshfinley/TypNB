@@ -46,6 +46,11 @@ export class Orchestrator {
   private pendingSource: string | null = null;
   private knownHash = new Map<string, string>(); // cellId → last hash
   private prevWrites = new Map<string, ReadonlySet<string>>(); // cellId → last analysis.writes
+  private currentCells: readonly Cell[] = [];
+  /** Cells whose lazy skip is overridden for the next run. Cleared after each runOnce. */
+  private forcedSet = new Set<string>();
+  /** When true, lazy skip is overridden for the entire stale set. Cleared after each runOnce. */
+  private forceAll = false;
 
   constructor(
     private readonly kernel: Kernel,
@@ -66,6 +71,38 @@ export class Orchestrator {
     this.pendingSource = source;
     if (this.inflight) return;
     void this.drain();
+  }
+
+  /**
+   * Force-run a single cell: overrides its lazy skip and re-executes it
+   * plus its downstream closure on the next run. Downstream lazy cells
+   * stay skipped — they only re-run if the user forces them too.
+   */
+  forceRun(cellId: string): void {
+    this.forcedSet.add(cellId);
+    this.update(this.currentSource);
+  }
+
+  /**
+   * Override lazy skips for the entire current stale set on the next run.
+   * Used by "run all stale" — re-runs every cell that's marked dirty,
+   * including ones the user has flagged lazy.
+   */
+  forceRunAllStale(): void {
+    this.forceAll = true;
+    this.update(this.currentSource);
+  }
+
+  /**
+   * Resolve a document offset to the cell whose `#cell(...)` call contains
+   * it, or null if the cursor is outside any cell. Used by the editor's
+   * "run current cell" keybind.
+   */
+  cellAtOffset(offset: number): string | null {
+    for (const cell of this.currentCells) {
+      if (offset >= cell.range.start && offset <= cell.range.end) return cell.id;
+    }
+    return null;
   }
 
   private async drain(): Promise<void> {
@@ -92,17 +129,26 @@ export class Orchestrator {
       this.outputCache.clear();
       this.knownHash.clear();
       this.prevWrites.clear();
+      this.currentCells = [];
+      this.forcedSet.clear();
+      this.forceAll = false;
       this.events.onAugmentedSource(source);
       this.events.onStatus([]);
       return;
     }
 
-    // 1. analyse only cells whose hash isn't cached
+    // 1. analyse only cells whose hash isn't cached. ownChanged tracks
+    //    cells whose own source changed, separate from cells made stale by
+    //    upstream propagation — needed for the lazy skip below.
     const analyses = new Map<string, CellAnalysis>();
     const changed = new Set<string>();
+    const ownChanged = new Set<string>();
     for (const cell of cells) {
       const prevHash = this.knownHash.get(cell.id);
-      if (prevHash !== cell.hash) changed.add(cell.id);
+      if (prevHash !== cell.hash) {
+        changed.add(cell.id);
+        ownChanged.add(cell.id);
+      }
       this.knownHash.set(cell.id, cell.hash);
 
       let a = this.analysisCache.get(cell.hash);
@@ -152,9 +198,13 @@ export class Orchestrator {
       }
     }
 
-    // 3. build DAG, find what's stale
+    // 3. build DAG, find what's stale. Force-run cells seed the closure too,
+    //    so downstream propagation kicks in for cells the user explicitly
+    //    re-ran (their own re-run is enforced by the lazy-skip override below).
     const dag = buildDag(cells, analyses);
-    const stale = downstreamClosure(dag, changed);
+    const staleSeeds = new Set<string>(changed);
+    for (const id of this.forcedSet) staleSeeds.add(id);
+    const stale = downstreamClosure(dag, staleSeeds);
 
     // 4. topo-order; on cycle, mark cycle members as error and run the rest.
     let order: string[];
@@ -169,14 +219,25 @@ export class Orchestrator {
       order = cells.filter((c) => !cycleMembers.has(c.id)).map((c) => c.id);
     }
 
-    // 5. re-execute stale cells in topo order
+    // 5. re-execute stale cells in topo order. A lazy cell with a cached
+    //    result is skipped on upstream-only changes; only its own source
+    //    edit, an explicit forceRun, or forceRunAllStale will re-execute it.
+    //    The cell's status surfaces as "stale" so the user can see it's
+    //    out of sync with upstream and choose to re-run manually.
     const cellById = new Map(cells.map((c) => [c.id, c]));
     const statuses: NodeStatus[] = [];
     for (const cellId of order) {
       const cell = cellById.get(cellId);
       if (!cell) continue;
       let result = this.outputCache.get(cellId);
-      if (stale.has(cellId) || !result) {
+      const wantsRun = stale.has(cellId) || !result;
+      const skipLazy =
+        cell.lazy &&
+        result !== undefined &&
+        !ownChanged.has(cellId) &&
+        !this.forcedSet.has(cellId) &&
+        !this.forceAll;
+      if (wantsRun && !skipLazy) {
         // mark running before executing — but only if our source is still current
         if (source === this.currentSource) {
           this.events.onStatus(buildStatuses(cells, this.outputCache, cellId, "running", cycleMembers));
@@ -184,11 +245,12 @@ export class Orchestrator {
         result = await runCell(cell, this.kernel, this.registry);
         this.outputCache.set(cellId, result);
       }
+      const reportedState: CellState = skipLazy && wantsRun ? "stale" : result!.state;
       statuses.push({
         cellId,
-        state: result.state,
-        ...(result.durationMs ? { durationMs: result.durationMs } : {}),
-        ...(result.errorMessage ? { error: result.errorMessage } : {}),
+        state: reportedState,
+        ...(result!.durationMs ? { durationMs: result!.durationMs } : {}),
+        ...(result!.errorMessage ? { error: result!.errorMessage } : {}),
       });
     }
     // Append cycle members as error statuses.
@@ -207,6 +269,10 @@ export class Orchestrator {
     for (const h of this.analysisCache.keys()) if (!liveHashes.has(h)) this.analysisCache.delete(h);
     this.prevWrites.clear();
     for (const cell of cells) this.prevWrites.set(cell.id, analyses.get(cell.id)!.writes);
+    this.currentCells = cells;
+    // Force flags consumed; clear so the next run is back to normal reactive.
+    this.forcedSet.clear();
+    this.forceAll = false;
 
     // 7. emit augmented source + final statuses
     if (source === this.currentSource) {

@@ -65,4 +65,32 @@ describe("parseCells", () => {
   test("returns no cells for source without #cell calls", async () => {
     expect(await parseCells("= just a heading\n\nsome prose")).toEqual([]);
   });
+
+  test("lazy defaults to false", async () => {
+    const cells = await parseCells(py("x = 1"));
+    expect(cells[0]!.lazy).toBe(false);
+  });
+
+  test("lazy: true is captured", async () => {
+    const cells = await parseCells(
+      `#cell(id: "load", lang: "python", lazy: true)[\`\`\`python\nx = 1\n\`\`\`]`,
+    );
+    expect(cells[0]!.lazy).toBe(true);
+  });
+
+  test("attribute order is independent (lang before id, lazy anywhere)", async () => {
+    const cells = await parseCells(
+      `#cell(lazy: true, lang: "python", id: "x")[\`\`\`python\ny = 1\n\`\`\`]`,
+    );
+    expect(cells[0]!.id).toBe("x");
+    expect(cells[0]!.lang).toBe("python");
+    expect(cells[0]!.lazy).toBe(true);
+  });
+
+  test("skips cells with unknown lang", async () => {
+    const cells = await parseCells(
+      `#cell(lang: "ruby")[\`\`\`ruby\nputs 1\n\`\`\`]`,
+    );
+    expect(cells).toEqual([]);
+  });
 });

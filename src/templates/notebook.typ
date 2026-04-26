@@ -6,10 +6,12 @@
 // implementation lands when the kernel + adapter pipeline produces outputs.
 
 // `body` is already a Typst raw block (e.g. ```python ... ```). Just style
-// the surrounding container; we don't rewrap it as raw().
-#let cell(id: none, lang: "python", body) = block(
+// the surrounding container; we don't rewrap it as raw(). `lazy` is honoured
+// by the orchestrator (skip auto-rerun on upstream changes); the template
+// uses it to draw a subtler stroke so the user can spot frozen cells.
+#let cell(id: none, lang: "python", lazy: false, body) = block(
   width: 100%, fill: rgb("#f4f4f7"),
-  stroke: (left: 2pt + rgb("#7c3aed")),
+  stroke: (left: 2pt + rgb(if lazy { "#9ca3af" } else { "#7c3aed" })),
   inset: (x: 12pt, y: 10pt), radius: (right: 4pt),
   body,
 )

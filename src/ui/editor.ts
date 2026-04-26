@@ -6,6 +6,7 @@ import {
   highlightActiveLineGutter,
   keymap,
   lineNumbers,
+  type KeyBinding,
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
@@ -14,15 +15,23 @@ import { bracketMatching, indentOnInput } from "@codemirror/language";
 export interface EditorOptions {
   initialDoc: string;
   onChange(source: string): void;
+  /**
+   * Extra keybindings appended ahead of the defaults so they can pre-empt
+   * built-ins (e.g. Cmd-Enter for run-current-cell).
+   */
+  extraKeymap?: readonly KeyBinding[];
 }
 
 export interface EditorHandle {
   getDoc(): string;
   setDoc(value: string): void;
+  /** Document offset of the primary selection's head. */
+  getCursor(): number;
   destroy(): void;
 }
 
 export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandle {
+  const extras: readonly KeyBinding[] = opts.extraKeymap ?? [];
   const view = new EditorView({
     parent: host,
     state: EditorState.create({
@@ -36,7 +45,7 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
         bracketMatching(),
         indentOnInput(),
         highlightSelectionMatches(),
-        keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+        keymap.of([...extras, indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
         EditorView.updateListener.of((v) => {
           if (v.docChanged) opts.onChange(v.state.doc.toString());
         }),
@@ -62,6 +71,7 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
     setDoc: (value) => {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
     },
+    getCursor: () => view.state.selection.main.head,
     destroy: () => view.destroy(),
   };
 }

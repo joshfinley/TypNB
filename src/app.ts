@@ -124,6 +124,24 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   const editor = mountEditor(editorHost, {
     initialDoc,
     onChange: (src) => scheduleUpdate(src),
+    extraKeymap: [
+      {
+        key: "Mod-Enter",
+        run: () => {
+          const cellId = orchestrator.cellAtOffset(editor.getCursor());
+          if (cellId) orchestrator.forceRun(cellId);
+          // Always handle the keystroke so the editor doesn't insert a newline.
+          return true;
+        },
+      },
+      {
+        key: "Mod-Shift-Enter",
+        run: () => {
+          orchestrator.forceRunAllStale();
+          return true;
+        },
+      },
+    ],
   });
 
   // Flush any pending debounced save before navigation. We use the sync

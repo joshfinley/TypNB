@@ -73,6 +73,22 @@ On every edit (300 ms debounce):
 7. **Splice** outputs back into the source as `#cell-output[...]` blocks.
 8. **Render** the augmented source with typst.ts → SVG.
 
+### On-demand execution
+
+Cells default to fully reactive. Mark expensive loaders/queries as `lazy`
+so downstream edits don't re-trigger them — the cached output is reused
+until the cell's own source changes or the user explicitly re-runs it:
+
+```typst
+#cell(id: "load", lang: "python", lazy: true)[```python
+df = pd.read_parquet("/data/big.parquet")  # don't re-run on every edit
+```]
+```
+
+Keybinds:
+- **Cmd/Ctrl + Enter** — run the cell at the cursor (overrides its lazy skip).
+- **Cmd/Ctrl + Shift + Enter** — run all currently stale cells (overrides every lazy skip).
+
 ## Output adapters (current)
 
 | Adapter             | Matches MIME                                 | Notes                                            |
@@ -137,7 +153,6 @@ Roughly in priority order:
       the sibling Typst playground.
 - [ ] **`/cell` and `/py` snippet expansion.** Type `/py`, hit Tab, get a
       `#cell(id:..., lang: "python")[...]` skeleton with the cursor in the body.
-- [ ] **Cmd+Enter to force-rerun, Cmd+Shift+Enter to rerun all stale.**
 
 ### Architectural hardening
 

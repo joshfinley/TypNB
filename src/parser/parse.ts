@@ -3,20 +3,16 @@ import type { Cell, CellLang, SourceRange } from "./types.ts";
 /**
  * Extract `#cell(...)` invocations from a Typst document.
  *
- * v0: regex-based scan for the canonical form:
- *   #cell(id: "name", lang: "python")[
- *     ```python
- *     ...
- *     ```
- *   ]
- *
- * The full Typst grammar is non-trivial; once cells stabilise we will swap
- * this for a real Typst-aware parser (likely a thin Lezer grammar) so that
- * cells inside conditionals, functions, or imports parse correctly.
+ * v0: regex-based scan. Captures the whole arg block then parses it for
+ * `id: "..."`, `lang: "..."`, `lazy: true|false` in any order. Once cells
+ * stabilise we will swap this for a real Typst-aware parser (likely a thin
+ * Lezer grammar) so cells inside conditionals, functions, or imports parse
+ * correctly.
  */
 
-const CELL_RE =
-  /#cell\(\s*(?:id:\s*"([^"]+)"\s*,\s*)?lang:\s*"(python|javascript|typst)"\s*\)\s*\[\s*```\s*\w*\s*\n([\s\S]*?)```\s*\]/g;
+const CELL_RE = /#cell\(([^)]*)\)\s*\[\s*```\s*\w*\s*\n([\s\S]*?)```\s*\]/g;
+
+const VALID_LANGS = new Set<CellLang>(["python", "javascript", "typst"]);
 
 export async function parseCells(source: string): Promise<Cell[]> {
   const cells: Cell[] = [];
@@ -26,13 +22,15 @@ export async function parseCells(source: string): Promise<Cell[]> {
   // ids are passed through unchanged — duplicates there are user error.
   const autoSeen = new Map<string, number>();
   while ((match = CELL_RE.exec(source)) !== null) {
-    const [whole, idArg, langArg, body] = match;
-    if (langArg === undefined || body === undefined) continue;
-    const lang = langArg as CellLang;
+    const [whole, argsRaw, body] = match;
+    if (argsRaw === undefined || body === undefined) continue;
+    const args = parseCellArgs(argsRaw);
+    if (args.lang === undefined || !VALID_LANGS.has(args.lang as CellLang)) continue;
+    const lang = args.lang as CellLang;
     const hash = await sha256(`${lang}\0${body}`);
     let id: string;
-    if (idArg !== undefined) {
-      id = idArg;
+    if (args.id !== undefined) {
+      id = args.id;
     } else {
       const base = `cell-${hash.slice(0, 8)}`;
       const n = autoSeen.get(base) ?? 0;
@@ -51,9 +49,34 @@ export async function parseCells(source: string): Promise<Cell[]> {
       range,
       bodyRange,
       hash,
+      lazy: args.lazy ?? false,
     });
   }
   return cells;
+}
+
+interface CellArgs {
+  id?: string;
+  lang?: string;
+  lazy?: boolean;
+}
+
+function parseCellArgs(raw: string): CellArgs {
+  const out: CellArgs = {};
+  // Match `key: "string"` or `key: identifier` (true / false / bare names).
+  const RE = /(\w+)\s*:\s*(?:"([^"]*)"|(\w+))/g;
+  let m: RegExpExecArray | null;
+  while ((m = RE.exec(raw)) !== null) {
+    const [, key, str, ident] = m;
+    if (key === "id" || key === "lang") {
+      if (str !== undefined) out[key] = str;
+    } else if (key === "lazy") {
+      if (ident === "true") out.lazy = true;
+      else if (ident === "false") out.lazy = false;
+    }
+    // Other keys are ignored — Typst may carry them for the template.
+  }
+  return out;
 }
 
 async function sha256(s: string): Promise<string> {
