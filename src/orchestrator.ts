@@ -253,13 +253,18 @@ export class Orchestrator {
       }
     }
 
-    // 3. build DAG, find what's stale. Force-run cells seed the closure too,
-    //    so downstream propagation kicks in for cells the user explicitly
-    //    re-ran (their own re-run is enforced by the lazy-skip override below).
+    // 3. build DAG. Two closures:
+    //    - `stale` = downstream of (hash-changed cells ∪ explicit force targets).
+    //      Used for status reporting — every cell here is out of sync with
+    //      its upstream and shows up with state "stale".
+    //    - `forcedClosure` = downstream of force targets only. Used to drive
+    //      execution. forceRun(a) runs a AND its downstream so the user
+    //      doesn't have to manually click ▶ on every cell down the chain.
     const dag = buildDag(cells, analyses);
     const staleSeeds = new Set<string>(changed);
     for (const id of this.forcedSet) staleSeeds.add(id);
     const stale = downstreamClosure(dag, staleSeeds);
+    const forcedClosure = downstreamClosure(dag, this.forcedSet);
 
     // 4. topo-order; on cycle, mark cycle members as error and run the rest.
     let order: string[];
@@ -285,8 +290,12 @@ export class Orchestrator {
       const cell = cellById.get(cellId);
       if (!cell) continue;
       let result = this.outputCache.get(cellId);
+      // Run if: the user explicitly forced this cell or any ancestor of it
+      // (forcedClosure), OR forceRunAllStale is on AND the cell needs a run
+      // — needing a run means it's either stale OR has never been executed.
+      const needsRun = stale.has(cellId) || !result;
       const isForced =
-        this.forcedSet.has(cellId) || (this.forceAll && stale.has(cellId));
+        forcedClosure.has(cellId) || (this.forceAll && needsRun);
       if (isForced) {
         if (source === this.currentSource) {
           this.events.onStatus(buildStatuses(cells, this.outputCache, cellId, "running", cycleMembers));
