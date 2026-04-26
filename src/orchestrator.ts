@@ -39,6 +39,25 @@ export interface OrchestratorEvents {
   onStatus(statuses: readonly NodeStatus[]): void;
   /** Called after each parse with the current cells, so the editor can sync gutter markers. */
   onCells?(cells: readonly Cell[]): void;
+  /**
+   * Fires after a run that actually executed at least one cell — i.e. when
+   * the persisted state would change. App layer hooks this to schedule a
+   * debounced write of `getState()` to the FS.
+   */
+  onStateChanged?(): void;
+}
+
+/**
+ * JSON-friendly snapshot of the orchestrator's reload-relevant state.
+ * Versioned so the format can evolve; restoreState ignores any payload
+ * whose `version` doesn't match.
+ */
+export interface PersistedState {
+  readonly version: 1;
+  readonly outputCache: ReadonlyArray<readonly [string, CellRunResult]>;
+  readonly analysisCache: ReadonlyArray<readonly [string, { reads: string[]; writes: string[] }]>;
+  readonly knownHash: ReadonlyArray<readonly [string, string]>;
+  readonly prevWrites: ReadonlyArray<readonly [string, string[]]>;
 }
 
 export class Orchestrator {
@@ -107,6 +126,40 @@ export class Orchestrator {
       if (offset >= cell.range.start && offset <= cell.range.end) return cell.id;
     }
     return null;
+  }
+
+  /** Snapshot the reload-relevant state in a JSON-friendly shape. */
+  getState(): PersistedState {
+    return {
+      version: 1,
+      outputCache: [...this.outputCache.entries()],
+      analysisCache: [...this.analysisCache.entries()].map(([h, a]) => [
+        h,
+        { reads: [...a.reads], writes: [...a.writes] },
+      ]),
+      knownHash: [...this.knownHash.entries()],
+      prevWrites: [...this.prevWrites.entries()].map(([id, set]) => [id, [...set]]),
+    };
+  }
+
+  /**
+   * Replace the orchestrator's caches with a previously snapshotted state.
+   * Silently no-ops if the version doesn't match — caller can decide to
+   * start fresh. Stale entries (cells no longer in the source) are pruned
+   * naturally on the next runOnce.
+   */
+  restoreState(state: unknown): void {
+    if (!isValidState(state)) return;
+    this.outputCache.clear();
+    for (const [k, v] of state.outputCache) this.outputCache.set(k, v);
+    this.analysisCache.clear();
+    for (const [h, a] of state.analysisCache) {
+      this.analysisCache.set(h, { reads: new Set(a.reads), writes: new Set(a.writes) });
+    }
+    this.knownHash.clear();
+    for (const [k, v] of state.knownHash) this.knownHash.set(k, v);
+    this.prevWrites.clear();
+    for (const [k, arr] of state.prevWrites) this.prevWrites.set(k, new Set(arr));
   }
 
   private async drain(): Promise<void> {
@@ -227,6 +280,7 @@ export class Orchestrator {
     //    spot what's out of sync with the current source and decide.
     const cellById = new Map(cells.map((c) => [c.id, c]));
     const statuses: NodeStatus[] = [];
+    let didExecute = false;
     for (const cellId of order) {
       const cell = cellById.get(cellId);
       if (!cell) continue;
@@ -239,6 +293,7 @@ export class Orchestrator {
         }
         result = await runCell(cell, this.kernel, this.registry);
         this.outputCache.set(cellId, result);
+        didExecute = true;
       }
       let reportedState: CellState;
       if (!result) reportedState = "idle";
@@ -277,6 +332,10 @@ export class Orchestrator {
       this.events.onAugmentedSource(augment(source, cells, (id) => this.outputCache.get(id)));
       this.events.onStatus(statuses);
     }
+    // 8. notify the persistence layer if the run actually mutated state.
+    //    Pure parse/DAG runs don't need a save — knownHash and outputCache
+    //    didn't change in any user-visible way.
+    if (didExecute) this.events.onStateChanged?.();
   }
 }
 
@@ -302,4 +361,16 @@ function setsEqual(a: ReadonlySet<string> | undefined, b: ReadonlySet<string>): 
   if (a.size !== b.size) return false;
   for (const v of a) if (!b.has(v)) return false;
   return true;
+}
+
+function isValidState(s: unknown): s is PersistedState {
+  return (
+    typeof s === "object" &&
+    s !== null &&
+    (s as { version?: unknown }).version === 1 &&
+    Array.isArray((s as { outputCache?: unknown }).outputCache) &&
+    Array.isArray((s as { analysisCache?: unknown }).analysisCache) &&
+    Array.isArray((s as { knownHash?: unknown }).knownHash) &&
+    Array.isArray((s as { prevWrites?: unknown }).prevWrites)
+  );
 }

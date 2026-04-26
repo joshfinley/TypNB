@@ -52,7 +52,9 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   // the memory FS on any error rather than failing to mount.
   const fs: FileSystem = await initFileSystem();
   const docPath = "/main.typ";
+  const outputsPath = `${docPath}.outputs.json`;
   const initialDoc = await loadOrSeed(fs, docPath, sampleDoc);
+  const persistedOutputs = await loadPersistedState(fs, outputsPath);
 
   const renderer = await createTypstRenderer();
   const status = mountStatus(statusHost);
@@ -102,6 +104,17 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     );
   }
 
+  let outputsSaveTimer: number | undefined;
+  function schedulePersistOutputs() {
+    if (outputsSaveTimer) clearTimeout(outputsSaveTimer);
+    outputsSaveTimer = window.setTimeout(() => {
+      const snapshot = orchestrator.getState();
+      void fs
+        .writeText(outputsPath, JSON.stringify(snapshot))
+        .catch((err) => console.error(`failed to save ${outputsPath}:`, err));
+    }, 600);
+  }
+
   const orchestrator = new Orchestrator(kernel, {
     onAugmentedSource: (source) => {
       void compile(source);
@@ -115,7 +128,13 @@ export async function mountApp(root: HTMLElement): Promise<void> {
       lastCells = cells.map((c) => ({ id: c.id, range: { ...c.range } }));
       syncEditorMarkers();
     },
+    onStateChanged: () => schedulePersistOutputs(),
   });
+
+  // Restore cached outputs/analyses BEFORE the first update — otherwise
+  // the first parse runs with empty knownHash, marks every cell changed,
+  // and the augmented source compiles without any cell outputs spliced in.
+  if (persistedOutputs) orchestrator.restoreState(persistedOutputs);
 
   let compileTimer: number | undefined;
   let saveTimer: number | undefined;
@@ -176,14 +195,19 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     ],
   });
 
-  // Flush any pending debounced save before navigation. We use the sync
-  // path on the FS because async writes during pagehide aren't guaranteed
-  // to complete; OPFS resolves quickly enough in practice.
+  // Flush any pending debounced saves before navigation. Async writes
+  // during pagehide aren't guaranteed to complete, but OPFS resolves
+  // quickly enough in practice.
   window.addEventListener("pagehide", () => {
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = undefined;
-      void fs.writeText(docPath, editor.getDoc()).catch(() => {});
+      if (editor) void fs.writeText(docPath, editor.getDoc()).catch(() => {});
+    }
+    if (outputsSaveTimer) {
+      clearTimeout(outputsSaveTimer);
+      outputsSaveTimer = undefined;
+      void fs.writeText(outputsPath, JSON.stringify(orchestrator.getState())).catch(() => {});
     }
   });
 
@@ -251,6 +275,22 @@ async function loadOrSeed(fs: FileSystem, path: string, seed: string): Promise<s
     console.warn(`failed to seed ${path}:`, err);
   }
   return seed;
+}
+
+/**
+ * Read a previously-persisted orchestrator state from disk. Returns null
+ * (with a warning) if the file is missing, unreadable, or corrupt — the
+ * orchestrator can rebuild from scratch on the next forced run.
+ */
+async function loadPersistedState(fs: FileSystem, path: string): Promise<unknown> {
+  try {
+    if (!(await fs.exists(path))) return null;
+    const raw = await fs.readText(path);
+    return JSON.parse(raw);
+  } catch (err) {
+    console.warn(`failed to load persisted state from ${path}:`, err);
+    return null;
+  }
 }
 
 async function initFileSystem(): Promise<FileSystem> {
