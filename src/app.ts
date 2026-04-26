@@ -51,7 +51,8 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   // private-mode Firefox, certain enterprise policies — so fall through to
   // the memory FS on any error rather than failing to mount.
   const fs: FileSystem = await initFileSystem();
-  void fs; // wired later when persistence lands
+  const docPath = "/main.typ";
+  const initialDoc = await loadOrSeed(fs, docPath, sampleDoc);
 
   const renderer = await createTypstRenderer();
   const status = mountStatus(statusHost);
@@ -75,11 +76,18 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   });
 
   let compileTimer: number | undefined;
+  let saveTimer: number | undefined;
   let inflight = 0;
 
   function scheduleUpdate(source: string) {
     if (compileTimer) clearTimeout(compileTimer);
     compileTimer = window.setTimeout(() => orchestrator.update(source), 300);
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => {
+      void fs.writeText(docPath, source).catch((err) =>
+        console.error(`failed to save ${docPath}:`, err),
+      );
+    }, 600);
   }
 
   async function compile(source: string) {
@@ -99,8 +107,19 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   }
 
   const editor = mountEditor(editorHost, {
-    initialDoc: sampleDoc,
+    initialDoc,
     onChange: (src) => scheduleUpdate(src),
+  });
+
+  // Flush any pending debounced save before navigation. We use the sync
+  // path on the FS because async writes during pagehide aren't guaranteed
+  // to complete; OPFS resolves quickly enough in practice.
+  window.addEventListener("pagehide", () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = undefined;
+      void fs.writeText(docPath, editor.getDoc()).catch(() => {});
+    }
   });
 
   // Mobile pane toggle (persisted)
@@ -140,6 +159,20 @@ function updateCellDot(el: HTMLElement, s: NodeStatus): void {
   if (el.dataset["state"] !== s.state) el.dataset["state"] = s.state;
   const title = s.error ?? (s.durationMs ? `${s.durationMs}ms` : "");
   if (el.title !== title) el.title = title;
+}
+
+async function loadOrSeed(fs: FileSystem, path: string, seed: string): Promise<string> {
+  try {
+    if (await fs.exists(path)) return await fs.readText(path);
+  } catch (err) {
+    console.warn(`failed to read ${path}; seeding fresh:`, err);
+  }
+  try {
+    await fs.writeText(path, seed);
+  } catch (err) {
+    console.warn(`failed to seed ${path}:`, err);
+  }
+  return seed;
 }
 
 async function initFileSystem(): Promise<FileSystem> {
