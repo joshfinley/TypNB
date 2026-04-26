@@ -21,22 +21,14 @@ import type { Cell } from "./parser/types.ts";
 import { buildDag } from "./dag/build.ts";
 import { topoSort, downstreamClosure, CycleError } from "./dag/schedule.ts";
 import type { CellAnalysis, CellState, NodeStatus } from "./dag/types.ts";
-import type { Kernel, MimeBundle, OutputEvent } from "./kernel/types.ts";
+import type { Kernel } from "./kernel/types.ts";
 import { AdapterRegistry } from "./adapters/registry.ts";
 import { plainAdapter } from "./adapters/plain.ts";
 import { typstPassthroughAdapter } from "./adapters/typst-passthrough.ts";
 import { matplotlibAdapter } from "./adapters/matplotlib.ts";
 import { pandasAdapter } from "./adapters/pandas.ts";
-
-interface CellRunResult {
-  readonly cellId: string;
-  readonly state: CellState;
-  readonly typstOutput: string; // already-rendered Typst content, or ""
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly errorMessage?: string;
-  readonly durationMs: number;
-}
+import { runCell, type CellRunResult } from "./exec/run-cell.ts";
+import { augment } from "./exec/augment.ts";
 
 export interface OrchestratorEvents {
   /** Called whenever the augmented Typst source changes (post-execute, or on parse-only updates). */
@@ -189,7 +181,7 @@ export class Orchestrator {
         if (source === this.currentSource) {
           this.events.onStatus(buildStatuses(cells, this.outputCache, cellId, "running", cycleMembers));
         }
-        result = await this.runCell(cell);
+        result = await runCell(cell, this.kernel, this.registry);
         this.outputCache.set(cellId, result);
       }
       statuses.push({
@@ -218,75 +210,9 @@ export class Orchestrator {
 
     // 7. emit augmented source + final statuses
     if (source === this.currentSource) {
-      this.events.onAugmentedSource(this.augment(source, cells));
+      this.events.onAugmentedSource(augment(source, cells, (id) => this.outputCache.get(id)));
       this.events.onStatus(statuses);
     }
-  }
-
-  private async runCell(cell: Cell): Promise<CellRunResult> {
-    if (cell.lang !== "python") {
-      // Non-Python cells aren't wired yet. Surface the gap loudly rather
-      // than letting the cell render as a silent green dot — and so any cell
-      // that depends on them (today: nothing, since analyseScope returns
-      // empty for non-python) doesn't look mysteriously stale.
-      const message = `unsupported cell language: ${cell.lang}`;
-      return {
-        cellId: cell.id,
-        state: "error",
-        typstOutput: asErrorBlock(message),
-        stdout: "",
-        stderr: "",
-        durationMs: 0,
-        errorMessage: message,
-      };
-    }
-    const t0 = performance.now();
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
-    const outputTypst: string[] = [];
-    let errorMessage: string | undefined;
-
-    try {
-      for await (const event of this.kernel.execute(cell.source, { cellId: cell.id })) {
-        applyEvent(event, this.registry, stdoutChunks, stderrChunks, outputTypst, (e) => {
-          errorMessage = `${e.name}: ${e.message}`;
-        });
-      }
-    } catch (err) {
-      errorMessage = (err as Error).message ?? String(err);
-    }
-
-    const durationMs = Math.round(performance.now() - t0);
-    const stdout = stdoutChunks.join("");
-    const stderr = stderrChunks.join("");
-
-    let typstOutput = outputTypst.join("\n\n");
-    if (stdout) typstOutput = (typstOutput ? typstOutput + "\n\n" : "") + asRawBlock(stdout);
-    if (stderr) typstOutput = (typstOutput ? typstOutput + "\n\n" : "") + asErrorBlock(stderr);
-    if (errorMessage) typstOutput = (typstOutput ? typstOutput + "\n\n" : "") + asErrorBlock(errorMessage);
-
-    return {
-      cellId: cell.id,
-      state: errorMessage ? "error" : "ok",
-      typstOutput,
-      stdout,
-      stderr,
-      durationMs,
-      ...(errorMessage ? { errorMessage } : {}),
-    };
-  }
-
-  /** Splice #cell-output(...) calls into the source after each #cell(...) block. */
-  private augment(source: string, cells: readonly Cell[]): string {
-    const sorted = [...cells].sort((a, b) => b.range.start - a.range.start);
-    let out = source;
-    for (const cell of sorted) {
-      const result = this.outputCache.get(cell.id);
-      if (!result || (!result.typstOutput && result.state !== "error")) continue;
-      const insertion = `\n\n#cell-output[\n${result.typstOutput}\n]`;
-      out = out.slice(0, cell.range.end) + insertion + out.slice(cell.range.end);
-    }
-    return out;
   }
 }
 
@@ -312,40 +238,4 @@ function setsEqual(a: ReadonlySet<string> | undefined, b: ReadonlySet<string>): 
   if (a.size !== b.size) return false;
   for (const v of a) if (!b.has(v)) return false;
   return true;
-}
-
-function applyEvent(
-  event: OutputEvent,
-  registry: AdapterRegistry,
-  stdout: string[],
-  stderr: string[],
-  outputs: string[],
-  onError: (e: { name: string; message: string }) => void,
-): void {
-  switch (event.kind) {
-    case "stdout":
-      stdout.push(event.data);
-      return;
-    case "stderr":
-      stderr.push(event.data);
-      return;
-    case "result":
-    case "display": {
-      const bundle: MimeBundle = event.data;
-      outputs.push(registry.renderHtml(bundle).typst);
-      return;
-    }
-    case "error":
-      onError({ name: event.name, message: event.message });
-      return;
-  }
-}
-
-function asRawBlock(s: string): string {
-  return "```\n" + s.replace(/```/g, "``\u200b`") + "\n```";
-}
-
-function asErrorBlock(s: string): string {
-  // Re-use the unsupported badge style for now; a dedicated #cell-error helper comes later.
-  return `#block(width: 100%, fill: rgb("#fef2f2"), stroke: (left: 2pt + rgb("#dc2626")), inset: (x: 12pt, y: 10pt), radius: (right: 4pt))[${asRawBlock(s)}]`;
 }
