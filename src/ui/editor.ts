@@ -147,6 +147,74 @@ function buildMarkerSet(
   );
 }
 
+// Line decorations spanning each cell's range. Pure visual delineation
+// (not in the source, doesn't affect copy) — gives the user a sense of
+// where one cell ends and the next begins without intrusive markup.
+const cellLineDeco = Decoration.line({ class: "cm-cell-line" });
+const cellLineFirstDeco = Decoration.line({ class: "cm-cell-line cm-cell-line-first" });
+const cellLineLastDeco = Decoration.line({ class: "cm-cell-line cm-cell-line-last" });
+
+/**
+ * Replacement widget for hidden cells: collapses the body lines into a
+ * single `··· hidden ···` placeholder. The text is still in the document,
+ * so cursor / undo / copy all work — only the rendering is collapsed.
+ */
+class HiddenBodyWidget extends WidgetType {
+  constructor(private readonly cellId: string) { super(); }
+  override eq(other: WidgetType): boolean {
+    return other instanceof HiddenBodyWidget && other.cellId === this.cellId;
+  }
+  override toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className = "cm-hidden-body";
+    el.textContent = "  ··· hidden ···  ";
+    el.title = `Cell source hidden (${this.cellId})`;
+    return el;
+  }
+  override ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+/**
+ * Compute the decoration set for cell line delineation + collapse of any
+ * hidden-cell bodies. Uses Decoration.set rather than RangeSetBuilder so
+ * the line decorations and the hidden-body Replace decoration can interleave
+ * (the Replace sits mid-cell, between later line starts) without violating
+ * the builder's strict monotonic-add requirement.
+ */
+function buildLineDecorations(
+  doc: EditorState["doc"],
+  cells: readonly CellMarker[],
+): DecorationSet {
+  if (cells.length === 0) return Decoration.none;
+  const sorted = [...cells].sort((a, b) => a.from - b.from);
+  const ranges: Range<Decoration>[] = [];
+  for (const cell of sorted) {
+    const startLine = doc.lineAt(Math.min(cell.from, doc.length));
+    const endLine = doc.lineAt(Math.min(cell.to, doc.length));
+    for (let n = startLine.number; n <= endLine.number; n++) {
+      const line = doc.line(n);
+      const deco =
+        n === startLine.number
+          ? cellLineFirstDeco
+          : n === endLine.number
+            ? cellLineLastDeco
+            : cellLineDeco;
+      ranges.push(deco.range(line.from));
+    }
+    if (cell.hidden && cell.bodyTo > cell.bodyFrom) {
+      ranges.push(
+        Decoration.replace({ widget: new HiddenBodyWidget(cell.cellId) }).range(
+          cell.bodyFrom,
+          cell.bodyTo,
+        ),
+      );
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
 export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandle {
   const extras: readonly KeyBinding[] = opts.extraKeymap ?? [];
   const cb: CellActionsCallbacks = {
@@ -165,33 +233,6 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
     },
   });
 
-  // Line decorations spanning each cell's range. Pure visual delineation
-  // (not in the source, doesn't affect copy) — gives the user a sense of
-  // where one cell ends and the next begins without intrusive markup.
-  const cellLineDeco = Decoration.line({ class: "cm-cell-line" });
-  const cellLineFirstDeco = Decoration.line({ class: "cm-cell-line cm-cell-line-first" });
-  const cellLineLastDeco = Decoration.line({ class: "cm-cell-line cm-cell-line-last" });
-
-  // Replacement widget for hidden cells: collapses the body lines into a
-  // single `··· hidden ···` placeholder. The text is still in the document,
-  // so cursor / undo / copy all work — only the rendering is collapsed.
-  class HiddenBodyWidget extends WidgetType {
-    constructor(private readonly cellId: string) { super(); }
-    override eq(other: WidgetType): boolean {
-      return other instanceof HiddenBodyWidget && other.cellId === this.cellId;
-    }
-    override toDOM(): HTMLElement {
-      const el = document.createElement("span");
-      el.className = "cm-hidden-body";
-      el.textContent = "  ··· hidden ···  ";
-      el.title = `Cell source hidden (${this.cellId})`;
-      return el;
-    }
-    override ignoreEvent(): boolean {
-      return false;
-    }
-  }
-
   const cellLinesField = StateField.define<DecorationSet>({
     create: () => Decoration.none,
     update(set, tr) {
@@ -203,47 +244,6 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
     },
     provide: (f) => EditorView.decorations.from(f),
   });
-
-  function buildLineDecorations(
-    doc: EditorState["doc"],
-    cells: readonly CellMarker[],
-  ): DecorationSet {
-    if (cells.length === 0) return Decoration.none;
-    const sorted = [...cells].sort((a, b) => a.from - b.from);
-    // Collect into an array; Decoration.set sorts internally. We can't use
-    // RangeSetBuilder here because the per-line decorations and the hidden-
-    // body Replace decoration interleave in the document (the Replace sits
-    // mid-cell, between later line starts), violating the builder's
-    // strict monotonic-add requirement.
-    const ranges: Range<Decoration>[] = [];
-    for (const cell of sorted) {
-      const startLine = doc.lineAt(Math.min(cell.from, doc.length));
-      const endLine = doc.lineAt(Math.min(cell.to, doc.length));
-      for (let n = startLine.number; n <= endLine.number; n++) {
-        const line = doc.line(n);
-        const deco =
-          n === startLine.number
-            ? cellLineFirstDeco
-            : n === endLine.number
-              ? cellLineLastDeco
-              : cellLineDeco;
-        ranges.push(deco.range(line.from));
-      }
-      // Collapse the body of hidden cells. Decoration.replace covers the
-      // body range (between ```python\n and ```), substituting a widget
-      // for the rendered text — the source itself is untouched, so cursor
-      // navigation and undo work normally.
-      if (cell.hidden && cell.bodyTo > cell.bodyFrom) {
-        ranges.push(
-          Decoration.replace({ widget: new HiddenBodyWidget(cell.cellId) }).range(
-            cell.bodyFrom,
-            cell.bodyTo,
-          ),
-        );
-      }
-    }
-    return Decoration.set(ranges, true);
-  }
 
   const cellGutter = gutter({
     class: "cm-cell-gutter",
