@@ -63,7 +63,9 @@ function buildPyDecorations(
     const tree = pythonParser.parse(text);
     // classHighlighter emits concrete `tok-*` class names (debuggable in
     // DevTools, fixed across builds). Pair with the .tok-* CSS rules in
-    // style.css for the visual styling.
+    // style.css for the visual styling. The Typst host tokenizer leaves
+    // raw-block bodies untagged, so these classes apply cleanly without
+    // an outer tok-string fighting them on specificity.
     highlightTree(tree, classHighlighter, (from, to, classes) => {
       const start = body.from + from;
       const end = body.from + to;

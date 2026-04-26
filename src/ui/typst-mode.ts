@@ -35,8 +35,11 @@ export const typstParser: StreamParser<State> = {
       return "comment";
     }
 
-    // Raw block continuation. `[` and `]` inside are literal Typst content,
-    // so we don't need to track bracket nesting here.
+    // Raw block continuation. The closing ``` tokens get the "string"
+    // class so they read as part of the fence; the body in between
+    // returns null — no class, no inherited colour. That keeps the
+    // Python decoration layer (python-highlight.ts) free to paint
+    // tokens inside cells without competing CSS specificity.
     if (state.inRaw) {
       while (!stream.eol()) {
         if (stream.match(/```/)) {
@@ -45,7 +48,7 @@ export const typstParser: StreamParser<State> = {
         }
         stream.next();
       }
-      return "string";
+      return null;
     }
 
     if (stream.eatSpace()) return null;
