@@ -1,13 +1,15 @@
 # notebook
 
-A reactive notebook that pairs **Typst** typesetting with **Pyodide**-powered
-live cells. Browser-native (no server, no Node runtime needed at runtime),
-reactive DAG execution (cells re-run automatically when their dependencies
-change), and outputs render as first-class Typst content rather than degraded
+A notebook that pairs **Typst** typesetting with **Pyodide**-powered live
+cells. Browser-native (no server, no Node runtime needed at runtime),
+manual cell execution with a reactive dependency DAG that tells you what's
+stale, and outputs render as first-class Typst content rather than degraded
 fallbacks.
 
-Status: **early prototype**. Two real Python cells run end-to-end, share state,
-and re-execute reactively. Most adapters and persistence are stubbed.
+Status: **prototype**. Python cells run end-to-end, share state, persist
+their outputs in OPFS, and the user runs them on demand (▶ in the gutter,
+Cmd-Enter, or Cmd-Shift-Enter). matplotlib figures render inline. Pandas
+DataFrames have an adapter but the kernel-side hook isn't wired yet.
 
 ## Quick start
 
@@ -34,16 +36,18 @@ bun run preview     # serve the production build
 ```
 src/
 ├── main.ts            — entry; installs dev client logger, mounts app
-├── app.ts             — composition only; no domain logic
+├── app.ts             — composes layers (mount → kernel init → restore state → first run)
+├── app/               — persistence, source-edit helpers (toggle hidden), topbar DOM
 ├── orchestrator.ts    — parser + DAG + kernel + adapters → augmented Typst source
+├── exec/              — per-cell executor (run-cell.ts) + augmented-source splice (augment.ts)
 ├── parser/            — extracts #cell(...) calls from .typ source
-├── dag/               — reactive dependency graph (build, topoSort, downstream closure)
-├── kernel/            — Kernel interface; PyodideKernel runs in a Web Worker
+├── dag/               — dependency graph (build, topoSort, downstream closure)
+├── kernel/            — Kernel interface; PyodideKernel runs in a Web Worker; bootstrap.py
 ├── adapters/          — MimeBundle → Typst content; registry-based
 ├── renderer/          — typst.ts (WASM) wrapper
-├── fs/                — virtual filesystem interface (memory + OPFS stub)
-├── ui/                — editor (CodeMirror 6), preview, status, styles
-├── templates/         — notebook.typ (the cell/output/notebook helpers)
+├── fs/                — virtual filesystem (OPFS, in-memory fallback)
+├── ui/                — editor (CodeMirror 6 + Lezer Python), preview, status, styles
+├── templates/         — notebook.typ + sample.typ
 └── dev/               — dev-only client error logger (stripped from prod)
 ```
 
@@ -111,7 +115,7 @@ loud, never silent. Adding an adapter is a few hundred lines against
 
 Roughly in priority order:
 
-### Closing real gaps in the reactive loop
+### Closing real gaps
 
 - [ ] **Surface compile diagnostics in the preview.** typst.ts errors print
       to console; they should overlay the preview pane like the playground does.
@@ -130,10 +134,9 @@ Roughly in priority order:
 
 ### Persistence & files
 
-- [ ] **OPFS impl.** `OpfsFileSystem` is currently a stub. Wire read/write/list
-      so the notebook auto-saves to the browser's origin-private FS.
-- [ ] **Multi-file notebooks.** Today `app.ts` carries one document literal.
-      Add a file picker / sidebar against the FS interface.
+- [ ] **Multi-file notebooks.** Doc lives at `/main.typ` in OPFS today
+      (with cached outputs at `/main.typ.outputs.json`). Add a file picker /
+      sidebar against the FS interface to support multiple notebooks.
 - [ ] **Import / export.** Drag-and-drop `.typ` in; "download" out as both
       `.typ` and `.pdf` (typst.ts has a PDF backend too).
 
