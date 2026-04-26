@@ -32,7 +32,11 @@
 
 #let notebook(title: none, kernel: "python", body) = {
   set document(title: if title == none { "Notebook" } else { title })
-  set page(margin: (x: 0.8in, y: 0.9in))
+  // height: auto turns the doc into one continuous page rather than
+  // paginating to A4 height with white space at the bottom of each.
+  // PDF export later may want fixed pages — at that point we'll thread
+  // a `pageless` flag (default true here, false from the PDF code path).
+  set page(width: 8.5in, height: auto, margin: (x: 0.8in, y: 0.9in))
   set text(font: ("Inter", "Helvetica Neue", "Arial"), size: 10.5pt)
   if title != none {
     text(size: 22pt, weight: "bold", title)
