@@ -1,19 +1,21 @@
 /**
- * Reactive orchestrator: parser + DAG + kernel + adapters.
+ * Manual-mode orchestrator: parser + DAG + kernel + adapters.
  *
  * Lifecycle on each editor change:
  *   1. parseCells(source)
  *   2. analyseScope on each cell whose hash changed (cached otherwise)
  *   3. buildDag → topoSort
- *   4. invalidate downstream-closure of any cell whose source hash changed
- *   5. execute stale cells in topo order, capturing OutputEvents
- *   6. route MIME bundles through AdapterRegistry → Typst content
- *   7. produce an "augmented source" with #cell-output(...) inserted after
- *      each cell, and hand it to the renderer
+ *   4. compute the stale set (downstream-closure of changed cells)
+ *   5. ONLY execute cells the user explicitly forced via forceRun /
+ *      forceRunAllStale. Stale-but-unforced cells keep their cached
+ *      output and surface as "stale" in the status pills.
+ *   6. produce an "augmented source" splicing in cached outputs for
+ *      cells that have a result; cells without one render as plain.
  *
- * v0 simplification: we splice outputs directly into the source rather than
- * writing them as separate _outputs/<id>.typ files for #include. Simpler
- * (no typst.ts VFS gymnastics) and reaches the same rendered result.
+ * The auto-execute model worked for tiny notebooks but became hostile
+ * once a single cell took >1s — every keystroke triggered cascading
+ * runs. Now the user runs cells explicitly (gutter ▶ / Cmd-Enter /
+ * Cmd-Shift-Enter) and the DAG only tells them what's stale.
  */
 
 import { parseCells } from "./parser/parse.ts";
@@ -35,6 +37,8 @@ export interface OrchestratorEvents {
   onAugmentedSource(source: string): void;
   /** Called when per-cell statuses change. */
   onStatus(statuses: readonly NodeStatus[]): void;
+  /** Called after each parse with the current cells, so the editor can sync gutter markers. */
+  onCells?(cells: readonly Cell[]): void;
 }
 
 export class Orchestrator {
@@ -132,23 +136,21 @@ export class Orchestrator {
       this.currentCells = [];
       this.forcedSet.clear();
       this.forceAll = false;
+      this.events.onCells?.([]);
       this.events.onAugmentedSource(source);
       this.events.onStatus([]);
       return;
     }
+    // Surface cells to the editor immediately so gutter markers update
+    // even before any kernel-bound analyse step completes.
+    this.events.onCells?.(cells);
 
-    // 1. analyse only cells whose hash isn't cached. ownChanged tracks
-    //    cells whose own source changed, separate from cells made stale by
-    //    upstream propagation — needed for the lazy skip below.
+    // 1. analyse only cells whose hash isn't cached.
     const analyses = new Map<string, CellAnalysis>();
     const changed = new Set<string>();
-    const ownChanged = new Set<string>();
     for (const cell of cells) {
       const prevHash = this.knownHash.get(cell.id);
-      if (prevHash !== cell.hash) {
-        changed.add(cell.id);
-        ownChanged.add(cell.id);
-      }
+      if (prevHash !== cell.hash) changed.add(cell.id);
       this.knownHash.set(cell.id, cell.hash);
 
       let a = this.analysisCache.get(cell.hash);
@@ -219,38 +221,34 @@ export class Orchestrator {
       order = cells.filter((c) => !cycleMembers.has(c.id)).map((c) => c.id);
     }
 
-    // 5. re-execute stale cells in topo order. A lazy cell with a cached
-    //    result is skipped on upstream-only changes; only its own source
-    //    edit, an explicit forceRun, or forceRunAllStale will re-execute it.
-    //    The cell's status surfaces as "stale" so the user can see it's
-    //    out of sync with upstream and choose to re-run manually.
+    // 5. execute only cells the user explicitly forced. Everything else
+    //    keeps its cached result (or stays "idle" if never run). Stale
+    //    cells with a cached result surface as "stale" so the user can
+    //    spot what's out of sync with the current source and decide.
     const cellById = new Map(cells.map((c) => [c.id, c]));
     const statuses: NodeStatus[] = [];
     for (const cellId of order) {
       const cell = cellById.get(cellId);
       if (!cell) continue;
       let result = this.outputCache.get(cellId);
-      const wantsRun = stale.has(cellId) || !result;
-      const skipLazy =
-        cell.lazy &&
-        result !== undefined &&
-        !ownChanged.has(cellId) &&
-        !this.forcedSet.has(cellId) &&
-        !this.forceAll;
-      if (wantsRun && !skipLazy) {
-        // mark running before executing — but only if our source is still current
+      const isForced =
+        this.forcedSet.has(cellId) || (this.forceAll && stale.has(cellId));
+      if (isForced) {
         if (source === this.currentSource) {
           this.events.onStatus(buildStatuses(cells, this.outputCache, cellId, "running", cycleMembers));
         }
         result = await runCell(cell, this.kernel, this.registry);
         this.outputCache.set(cellId, result);
       }
-      const reportedState: CellState = skipLazy && wantsRun ? "stale" : result!.state;
+      let reportedState: CellState;
+      if (!result) reportedState = "idle";
+      else if (stale.has(cellId)) reportedState = "stale";
+      else reportedState = result.state;
       statuses.push({
         cellId,
         state: reportedState,
-        ...(result!.durationMs ? { durationMs: result!.durationMs } : {}),
-        ...(result!.errorMessage ? { error: result!.errorMessage } : {}),
+        ...(result?.durationMs ? { durationMs: result.durationMs } : {}),
+        ...(result?.errorMessage ? { error: result.errorMessage } : {}),
       });
     }
     // Append cycle members as error statuses.

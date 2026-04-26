@@ -12,7 +12,7 @@
  *   fs/           — virtual filesystem (OPFS / memory)
  */
 
-import { mountEditor } from "./ui/editor.ts";
+import { mountEditor, type CellMarker, type EditorHandle } from "./ui/editor.ts";
 import { mountPreview } from "./ui/preview.ts";
 import { mountStatus } from "./ui/status.ts";
 import { createTypstRenderer } from "./renderer/typst-wasm.ts";
@@ -80,11 +80,41 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   // we configure on first use.
   await renderer.setExtraSource("/notebook.typ", notebookTemplate);
 
+  // Editor is declared here so the orchestrator callbacks can capture it,
+  // and assigned below — events fire only after orchestrator.update runs,
+  // which is after the assignment.
+  let editor: EditorHandle | undefined;
+
+  // Latest per-cell statuses, kept so the gutter markers can colour-code
+  // alongside the topbar dots.
+  let lastStatuses: readonly NodeStatus[] = [];
+  let lastCells: readonly { id: string; range: { start: number; end: number } }[] = [];
+
+  function syncEditorMarkers() {
+    if (!editor) return;
+    const stateById = new Map(lastStatuses.map((s) => [s.cellId, s.state]));
+    editor.setCells(
+      lastCells.map((c) => ({
+        from: c.range.start,
+        cellId: c.id,
+        state: toMarkerState(stateById.get(c.id)),
+      })),
+    );
+  }
+
   const orchestrator = new Orchestrator(kernel, {
     onAugmentedSource: (source) => {
       void compile(source);
     },
-    onStatus: (statuses) => renderCellStatuses(cellsStatus, statuses),
+    onStatus: (statuses) => {
+      lastStatuses = statuses;
+      renderCellStatuses(cellsStatus, statuses);
+      syncEditorMarkers();
+    },
+    onCells: (cells) => {
+      lastCells = cells.map((c) => ({ id: c.id, range: { ...c.range } }));
+      syncEditorMarkers();
+    },
   });
 
   let compileTimer: number | undefined;
@@ -121,13 +151,15 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     }
   }
 
-  const editor = mountEditor(editorHost, {
+  editor = mountEditor(editorHost, {
     initialDoc,
     onChange: (src) => scheduleUpdate(src),
+    onRunCell: (cellId) => orchestrator.forceRun(cellId),
     extraKeymap: [
       {
         key: "Mod-Enter",
         run: () => {
+          if (!editor) return false;
           const cellId = orchestrator.cellAtOffset(editor.getCursor());
           if (cellId) orchestrator.forceRun(cellId);
           // Always handle the keystroke so the editor doesn't insert a newline.
@@ -192,6 +224,19 @@ function updateCellDot(el: HTMLElement, s: NodeStatus): void {
   if (el.dataset["state"] !== s.state) el.dataset["state"] = s.state;
   const title = s.error ?? (s.durationMs ? `${s.durationMs}ms` : "");
   if (el.title !== title) el.title = title;
+}
+
+/** Map orchestrator NodeStatus.state to the marker state subset. */
+function toMarkerState(s: NodeStatus["state"] | undefined): CellMarker["state"] {
+  switch (s) {
+    case "ok":
+    case "error":
+    case "running":
+    case "stale":
+      return s;
+    default:
+      return "idle";
+  }
 }
 
 async function loadOrSeed(fs: FileSystem, path: string, seed: string): Promise<string> {

@@ -54,6 +54,27 @@ body { font: 13px/1.4 var(--sans); color: var(--text); background: var(--bg); }
 .cells-status .cell-dot[data-state="error"] { background: var(--err); }
 .cells-status .cell-dot[data-state="idle"] { background: #d1d5db; opacity: 0.5; }
 
+/* Per-cell run button in the editor gutter. */
+.cm-cell-gutter { width: 22px; }
+.cm-run-cell {
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin: 1px 2px;
+  padding: 0;
+  font-size: 9px; line-height: 1;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 80ms, color 80ms, border-color 80ms;
+}
+.cm-run-cell:hover { background: var(--hover); color: var(--text); border-color: var(--text); }
+.cm-run-cell[data-state="ok"] { color: var(--accent); border-color: var(--accent); }
+.cm-run-cell[data-state="error"] { color: var(--err); border-color: var(--err); }
+.cm-run-cell[data-state="running"] { color: #e0a800; border-color: #e0a800; animation: pulse 1s infinite; }
+.cm-run-cell[data-state="stale"] { color: #b45309; border-color: #b45309; }
+
 @keyframes pulse { 50% { opacity: 0.3; } }
 
 .split {

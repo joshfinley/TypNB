@@ -62,32 +62,28 @@ ps
 ```]
 ```
 
-On every edit (300 ms debounce):
+Cells run on demand, not on edit. On every edit (300 ms debounce):
 
 1. **Parse** all `#cell(...)` calls out of the source.
 2. **Analyse** each (changed) cell's reads/writes via Python AST in Pyodide.
 3. **Build the DAG**: edges from writers → readers of each symbol.
-4. **Invalidate** the downstream closure of any cell whose source hash changed.
-5. **Execute** stale cells in topological order in the persistent Pyodide kernel.
-6. **Adapt** each result's MIME bundle to Typst content via the registry.
-7. **Splice** outputs back into the source as `#cell-output[...]` blocks.
-8. **Render** the augmented source with typst.ts → SVG.
+4. **Mark stale**: the downstream closure of any cell whose hash changed.
+5. **Render**: splice cached outputs into the source and compile to SVG.
 
-### On-demand execution
+Nothing executes automatically — opening a notebook shows whatever
+outputs the previous run left in the cache, and edits just mark cells
+stale. The user runs cells explicitly:
 
-Cells default to fully reactive. Mark expensive loaders/queries as `lazy`
-so downstream edits don't re-trigger them — the cached output is reused
-until the cell's own source changes or the user explicitly re-runs it:
+- **▶ button in the editor gutter** — runs that cell.
+- **Cmd/Ctrl + Enter** — runs the cell at the cursor.
+- **Cmd/Ctrl + Shift + Enter** — runs every currently stale cell.
 
-```typst
-#cell(id: "load", lang: "python", lazy: true)[```python
-df = pd.read_parquet("/data/big.parquet")  # don't re-run on every edit
-```]
-```
+Forced runs include the downstream closure of the targeted cell(s),
+executed in topological order through the persistent Pyodide kernel.
 
-Keybinds:
-- **Cmd/Ctrl + Enter** — run the cell at the cursor (overrides its lazy skip).
-- **Cmd/Ctrl + Shift + Enter** — run all currently stale cells (overrides every lazy skip).
+`lazy: true` is parsed and stored on cells but is currently a no-op —
+the global default is already manual. It's reserved for a future opt-in
+"reactive mode" where it would pin a cell to manual semantics.
 
 ## Output adapters (current)
 
@@ -117,17 +113,11 @@ Roughly in priority order:
 
 ### Closing real gaps in the reactive loop
 
-- [ ] **Per-cell status in the editor gutter.** Today's per-cell dots live in
-      the topbar. CodeMirror gutter markers next to each cell give the visual
-      that `running / stale / ok / error` is per-cell.
 - [ ] **Surface compile diagnostics in the preview.** typst.ts errors print
       to console; they should overlay the preview pane like the playground does.
 - [ ] **Cancel + interrupt.** Hook Pyodide's SharedArrayBuffer-based interrupt
       so a stuck cell doesn't wedge the kernel. Requires COOP/COEP headers
       (already set in `vite.config.ts`).
-- [ ] **Cell-id stability.** Today, `id:` defaults to `cell-N` by source order.
-      A cell without an explicit id that's reordered breaks DAG cache.
-      Auto-derive a stable id from a content hash if no `id:` is provided.
 
 ### Output adapters
 
