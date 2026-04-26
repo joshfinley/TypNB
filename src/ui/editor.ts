@@ -1,4 +1,10 @@
-import { EditorState, StateEffect, StateField, RangeSet, RangeSetBuilder } from "@codemirror/state";
+import {
+  EditorState,
+  type Range,
+  RangeSet,
+  StateEffect,
+  StateField,
+} from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -204,7 +210,12 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
   ): DecorationSet {
     if (cells.length === 0) return Decoration.none;
     const sorted = [...cells].sort((a, b) => a.from - b.from);
-    const builder = new RangeSetBuilder<Decoration>();
+    // Collect into an array; Decoration.set sorts internally. We can't use
+    // RangeSetBuilder here because the per-line decorations and the hidden-
+    // body Replace decoration interleave in the document (the Replace sits
+    // mid-cell, between later line starts), violating the builder's
+    // strict monotonic-add requirement.
+    const ranges: Range<Decoration>[] = [];
     for (const cell of sorted) {
       const startLine = doc.lineAt(Math.min(cell.from, doc.length));
       const endLine = doc.lineAt(Math.min(cell.to, doc.length));
@@ -216,21 +227,22 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
             : n === endLine.number
               ? cellLineLastDeco
               : cellLineDeco;
-        builder.add(line.from, line.from, deco);
+        ranges.push(deco.range(line.from));
       }
       // Collapse the body of hidden cells. Decoration.replace covers the
       // body range (between ```python\n and ```), substituting a widget
       // for the rendered text — the source itself is untouched, so cursor
       // navigation and undo work normally.
       if (cell.hidden && cell.bodyTo > cell.bodyFrom) {
-        builder.add(
-          cell.bodyFrom,
-          cell.bodyTo,
-          Decoration.replace({ widget: new HiddenBodyWidget(cell.cellId) }),
+        ranges.push(
+          Decoration.replace({ widget: new HiddenBodyWidget(cell.cellId) }).range(
+            cell.bodyFrom,
+            cell.bodyTo,
+          ),
         );
       }
     }
-    return builder.finish();
+    return Decoration.set(ranges, true);
   }
 
   const cellGutter = gutter({
