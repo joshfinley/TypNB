@@ -3,6 +3,7 @@ import {
   Decoration,
   type DecorationSet,
   EditorView,
+  WidgetType,
   drawSelection,
   gutter,
   GutterMarker,
@@ -36,6 +37,8 @@ export interface CellMarker {
   /** Cell's declared language; only "python" gets sub-language highlighting today. */
   readonly lang: string;
   readonly state: "idle" | "ok" | "stale" | "running" | "error";
+  /** Source-hiding state from the cell metadata; collapses the body in the editor and preview. */
+  readonly hidden: boolean;
 }
 
 export interface EditorOptions {
@@ -48,6 +51,8 @@ export interface EditorOptions {
   extraKeymap?: readonly KeyBinding[];
   /** Click-handler for the per-cell ▶ gutter button. */
   onRunCell?: (cellId: string) => void;
+  /** Click-handler for the per-cell hide-toggle gutter button. */
+  onToggleHidden?: (cellId: string) => void;
 }
 
 export interface EditorHandle {
@@ -57,65 +62,98 @@ export interface EditorHandle {
   getCursor(): number;
   /** Update the cell-run gutter markers to match the latest parse. */
   setCells(cells: readonly CellMarker[]): void;
+  /** Replace a document range with new text — used by the hide toggle. */
+  replaceRange(from: number, to: number, insert: string): void;
   destroy(): void;
 }
 
 /** Effect that replaces the cell-run gutter markers wholesale. */
 const setCellsEffect = StateEffect.define<readonly CellMarker[]>();
 
-class RunCellMarker extends GutterMarker {
+interface CellActionsCallbacks {
+  onRun?: (cellId: string) => void;
+  onToggleHidden?: (cellId: string) => void;
+}
+
+class CellActionsMarker extends GutterMarker {
   constructor(
     private readonly cellId: string,
     private readonly state: CellMarker["state"],
-    private readonly onRun: ((cellId: string) => void) | undefined,
+    private readonly hidden: boolean,
+    private readonly cb: CellActionsCallbacks,
   ) {
     super();
   }
   override eq(other: GutterMarker): boolean {
     return (
-      other instanceof RunCellMarker &&
+      other instanceof CellActionsMarker &&
       other.cellId === this.cellId &&
-      other.state === this.state
+      other.state === this.state &&
+      other.hidden === this.hidden
     );
   }
   override toDOM(): HTMLElement {
-    const btn = document.createElement("button");
-    btn.className = "cm-run-cell";
-    btn.dataset["state"] = this.state;
-    btn.type = "button";
-    btn.textContent = "▶";
-    btn.title = `Run cell (${this.cellId})`;
-    btn.addEventListener("mousedown", (e) => {
+    const wrap = document.createElement("span");
+    wrap.className = "cm-cell-actions";
+
+    const run = document.createElement("button");
+    run.className = "cm-run-cell";
+    run.dataset["state"] = this.state;
+    run.type = "button";
+    run.textContent = "▶";
+    run.title = `Run cell (${this.cellId})`;
+    run.addEventListener("mousedown", (e) => {
       // mousedown rather than click: the gutter's own click handling can
       // shift focus and swallow the event before click fires.
       e.preventDefault();
       e.stopPropagation();
-      this.onRun?.(this.cellId);
+      this.cb.onRun?.(this.cellId);
     });
-    return btn;
+    wrap.appendChild(run);
+
+    const hide = document.createElement("button");
+    hide.className = "cm-hide-cell";
+    hide.dataset["hidden"] = String(this.hidden);
+    hide.type = "button";
+    hide.textContent = this.hidden ? "▸" : "▾";
+    hide.title = this.hidden ? "Show cell source" : "Hide cell source";
+    hide.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.cb.onToggleHidden?.(this.cellId);
+    });
+    wrap.appendChild(hide);
+
+    return wrap;
   }
 }
 
 function buildMarkerSet(
   cells: readonly CellMarker[],
-  onRun: ((cellId: string) => void) | undefined,
-): RangeSet<RunCellMarker> {
+  cb: CellActionsCallbacks,
+): RangeSet<CellActionsMarker> {
   const sorted = [...cells].sort((a, b) => a.from - b.from);
   return RangeSet.of(
-    sorted.map((c) => new RunCellMarker(c.cellId, c.state, onRun).range(c.from)),
+    sorted.map((c) =>
+      new CellActionsMarker(c.cellId, c.state, c.hidden, cb).range(c.from),
+    ),
     true,
   );
 }
 
 export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandle {
   const extras: readonly KeyBinding[] = opts.extraKeymap ?? [];
+  const cb: CellActionsCallbacks = {
+    ...(opts.onRunCell ? { onRun: opts.onRunCell } : {}),
+    ...(opts.onToggleHidden ? { onToggleHidden: opts.onToggleHidden } : {}),
+  };
 
-  const cellMarkersField = StateField.define<RangeSet<RunCellMarker>>({
+  const cellMarkersField = StateField.define<RangeSet<CellActionsMarker>>({
     create: () => RangeSet.empty,
     update(set, tr) {
       set = set.map(tr.changes);
       for (const e of tr.effects) {
-        if (e.is(setCellsEffect)) set = buildMarkerSet(e.value, opts.onRunCell);
+        if (e.is(setCellsEffect)) set = buildMarkerSet(e.value, cb);
       }
       return set;
     },
@@ -127,6 +165,26 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
   const cellLineDeco = Decoration.line({ class: "cm-cell-line" });
   const cellLineFirstDeco = Decoration.line({ class: "cm-cell-line cm-cell-line-first" });
   const cellLineLastDeco = Decoration.line({ class: "cm-cell-line cm-cell-line-last" });
+
+  // Replacement widget for hidden cells: collapses the body lines into a
+  // single `··· hidden ···` placeholder. The text is still in the document,
+  // so cursor / undo / copy all work — only the rendering is collapsed.
+  class HiddenBodyWidget extends WidgetType {
+    constructor(private readonly cellId: string) { super(); }
+    override eq(other: WidgetType): boolean {
+      return other instanceof HiddenBodyWidget && other.cellId === this.cellId;
+    }
+    override toDOM(): HTMLElement {
+      const el = document.createElement("span");
+      el.className = "cm-hidden-body";
+      el.textContent = "  ··· hidden ···  ";
+      el.title = `Cell source hidden (${this.cellId})`;
+      return el;
+    }
+    override ignoreEvent(): boolean {
+      return false;
+    }
+  }
 
   const cellLinesField = StateField.define<DecorationSet>({
     create: () => Decoration.none,
@@ -160,6 +218,17 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
               : cellLineDeco;
         builder.add(line.from, line.from, deco);
       }
+      // Collapse the body of hidden cells. Decoration.replace covers the
+      // body range (between ```python\n and ```), substituting a widget
+      // for the rendered text — the source itself is untouched, so cursor
+      // navigation and undo work normally.
+      if (cell.hidden && cell.bodyTo > cell.bodyFrom) {
+        builder.add(
+          cell.bodyFrom,
+          cell.bodyTo,
+          Decoration.replace({ widget: new HiddenBodyWidget(cell.cellId) }),
+        );
+      }
     }
     return builder.finish();
   }
@@ -167,7 +236,7 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
   const cellGutter = gutter({
     class: "cm-cell-gutter",
     markers: (view) => view.state.field(cellMarkersField),
-    initialSpacer: () => new RunCellMarker("", "idle", undefined),
+    initialSpacer: () => new CellActionsMarker("", "idle", false, {}),
   });
 
   const view = new EditorView({
@@ -219,12 +288,16 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
     },
     getCursor: () => view.state.selection.main.head,
     setCells: (cells) => {
+      // Hidden python cells get no python decorations — body is collapsed.
       const pyBodies = cells
-        .filter((c) => c.lang === "python")
+        .filter((c) => c.lang === "python" && !c.hidden)
         .map((c) => ({ from: c.bodyFrom, to: c.bodyTo }));
       view.dispatch({
         effects: [setCellsEffect.of(cells), setPyBodiesEffect.of(pyBodies)],
       });
+    },
+    replaceRange: (from, to, insert) => {
+      view.dispatch({ changes: { from, to, insert } });
     },
     destroy: () => view.destroy(),
   };

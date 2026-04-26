@@ -50,6 +50,7 @@ export async function parseCells(source: string): Promise<Cell[]> {
       bodyRange,
       hash,
       lazy: args.lazy ?? false,
+      hidden: args.hidden ?? false,
     });
   }
   return cells;
@@ -59,6 +60,7 @@ interface CellArgs {
   id?: string;
   lang?: string;
   lazy?: boolean;
+  hidden?: boolean;
 }
 
 function parseCellArgs(raw: string): CellArgs {
@@ -70,9 +72,9 @@ function parseCellArgs(raw: string): CellArgs {
     const [, key, str, ident] = m;
     if (key === "id" || key === "lang") {
       if (str !== undefined) out[key] = str;
-    } else if (key === "lazy") {
-      if (ident === "true") out.lazy = true;
-      else if (ident === "false") out.lazy = false;
+    } else if (key === "lazy" || key === "hidden") {
+      if (ident === "true") out[key] = true;
+      else if (ident === "false") out[key] = false;
     }
     // Other keys are ignored — Typst may carry them for the template.
   }

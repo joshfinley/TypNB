@@ -95,6 +95,7 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     lang: string;
     range: { start: number; end: number };
     bodyRange: { start: number; end: number };
+    hidden: boolean;
   }
   let lastCells: readonly CellSnapshot[] = [];
 
@@ -110,6 +111,7 @@ export async function mountApp(root: HTMLElement): Promise<void> {
         cellId: c.id,
         lang: c.lang,
         state: toMarkerState(stateById.get(c.id)),
+        hidden: c.hidden,
       })),
     );
   }
@@ -140,6 +142,7 @@ export async function mountApp(root: HTMLElement): Promise<void> {
         lang: c.lang,
         range: { ...c.range },
         bodyRange: { ...c.bodyRange },
+        hidden: c.hidden,
       }));
       syncEditorMarkers();
     },
@@ -185,10 +188,26 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     }
   }
 
+  function toggleCellHidden(cellId: string) {
+    if (!editor) return;
+    const cell = lastCells.find((c) => c.id === cellId);
+    if (!cell) return;
+    const doc = editor.getDoc();
+    const cellText = doc.slice(cell.range.start, cell.range.end);
+    const openParen = cellText.indexOf("(");
+    const closeParen = cellText.indexOf(")", openParen);
+    if (openParen < 0 || closeParen < 0) return;
+    const argsStart = cell.range.start + openParen + 1;
+    const argsEnd = cell.range.start + closeParen;
+    const argsText = doc.slice(argsStart, argsEnd);
+    editor.replaceRange(argsStart, argsEnd, toggleHiddenInArgs(argsText));
+  }
+
   editor = mountEditor(editorHost, {
     initialDoc,
     onChange: (src) => scheduleUpdate(src),
     onRunCell: (cellId) => orchestrator.forceRun(cellId),
+    onToggleHidden: (cellId) => toggleCellHidden(cellId),
     extraKeymap: [
       {
         key: "Mod-Enter",
@@ -265,6 +284,31 @@ function updateCellDot(el: HTMLElement, s: NodeStatus): void {
   if (el.title !== title) el.title = title;
 }
 
+/**
+ * Toggle the `hidden:` attribute in a `#cell(...)` arg list.
+ * - If `hidden: true` is present, removes it (and the surrounding comma if any).
+ * - If `hidden: false` is present, flips it to `true`.
+ * - Otherwise, appends `hidden: true` (with a leading comma if other args exist).
+ */
+function toggleHiddenInArgs(args: string): string {
+  // Match an existing `hidden: bool` attribute with optional surrounding commas.
+  // Captures the boolean so we can flip vs. remove.
+  const HIDDEN_RE = /(,\s*)?hidden\s*:\s*(true|false)(\s*,)?/;
+  const m = args.match(HIDDEN_RE);
+  if (m) {
+    const [whole, leadingComma, value, trailingComma] = m;
+    if (value === "false") {
+      return args.replace(whole, `${leadingComma ?? ""}hidden: true${trailingComma ?? ""}`);
+    }
+    // value === "true": remove the attribute entirely. If we ate a comma on
+    // either side, leave one behind so the remaining args stay valid.
+    const replacement = leadingComma && trailingComma ? "," : "";
+    return args.replace(whole, replacement).trim();
+  }
+  const trimmed = args.trim();
+  return trimmed ? `${trimmed}, hidden: true` : `hidden: true`;
+}
+
 /** Map orchestrator NodeStatus.state to the marker state subset. */
 function toMarkerState(s: NodeStatus["state"] | undefined): CellMarker["state"] {
   switch (s) {
@@ -326,3 +370,6 @@ async function initFileSystem(): Promise<FileSystem> {
   await mem.init();
   return mem;
 }
+
+/** Test-only export. Not part of the public API. */
+export const __test = { toggleHiddenInArgs };

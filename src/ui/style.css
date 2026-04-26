@@ -119,12 +119,17 @@ body { font: 13px/1.4 var(--sans); color: var(--text); background: var(--bg); }
     inset 0 -1px 0 rgba(124, 58, 237, 0.18);
 }
 
-/* Per-cell run button in the editor gutter. */
-.cm-cell-gutter { width: 22px; }
-.cm-run-cell {
+/* Per-cell action buttons in the editor gutter (run + hide). */
+.cm-cell-gutter { width: 44px; }
+.cm-cell-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 1px 2px;
+}
+.cm-cell-actions button {
   width: 18px; height: 18px;
   display: inline-flex; align-items: center; justify-content: center;
-  margin: 1px 2px;
   padding: 0;
   font-size: 9px; line-height: 1;
   background: transparent;
@@ -134,11 +139,28 @@ body { font: 13px/1.4 var(--sans); color: var(--text); background: var(--bg); }
   cursor: pointer;
   transition: background 80ms, color 80ms, border-color 80ms;
 }
-.cm-run-cell:hover { background: var(--hover); color: var(--text); border-color: var(--text); }
+.cm-cell-actions button:hover { background: var(--hover); color: var(--text); border-color: var(--text); }
 .cm-run-cell[data-state="ok"] { color: var(--accent); border-color: var(--accent); }
 .cm-run-cell[data-state="error"] { color: var(--err); border-color: var(--err); }
 .cm-run-cell[data-state="running"] { color: #e0a800; border-color: #e0a800; animation: pulse 1s infinite; }
 .cm-run-cell[data-state="stale"] { color: #b45309; border-color: #b45309; }
+.cm-hide-cell { font-size: 11px; }
+.cm-hide-cell[data-hidden="true"] { color: var(--text); }
+
+/* Inline placeholder for a cell whose source is hidden. The actual text
+   stays in the document — only the rendering is collapsed. */
+.cm-hidden-body {
+  display: inline-block;
+  padding: 1px 8px;
+  margin: 0 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(124, 58, 237, 0.08);
+  border: 1px dashed rgba(124, 58, 237, 0.35);
+  border-radius: 3px;
+  user-select: none;
+}
 
 @keyframes pulse { 50% { opacity: 0.3; } }
 

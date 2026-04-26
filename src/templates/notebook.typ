@@ -9,12 +9,16 @@
 // the surrounding container; we don't rewrap it as raw(). `lazy` is honoured
 // by the orchestrator (skip auto-rerun on upstream changes); the template
 // uses it to draw a subtler stroke so the user can spot frozen cells.
-#let cell(id: none, lang: "python", lazy: false, body) = block(
-  width: 100%, fill: rgb("#f4f4f7"),
-  stroke: (left: 2pt + rgb(if lazy { "#9ca3af" } else { "#7c3aed" })),
-  inset: (x: 12pt, y: 10pt), radius: (right: 4pt),
-  body,
-)
+// `hidden: true` suppresses the source block entirely — the cell-output
+// that follows is still rendered, so the reader sees only the result.
+#let cell(id: none, lang: "python", lazy: false, hidden: false, body) = if not hidden {
+  block(
+    width: 100%, fill: rgb("#f4f4f7"),
+    stroke: (left: 2pt + rgb(if lazy { "#9ca3af" } else { "#7c3aed" })),
+    inset: (x: 12pt, y: 10pt), radius: (right: 4pt),
+    body,
+  )
+}
 
 #let cell-output(body) = block(
   width: 100%, inset: (x: 12pt, y: 8pt), body,

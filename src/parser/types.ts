@@ -35,4 +35,12 @@ export interface Cell {
    * lazy so downstream edits don't re-trigger them.
    */
   readonly lazy: boolean;
+  /**
+   * When true, the cell's source block is suppressed from both the
+   * editor's visual rendering (collapsed to a placeholder) and the
+   * rendered preview (notebook.typ skips the source block). The cell's
+   * output still renders normally — useful for publishing where readers
+   * see graphs/tables without the code that produced them.
+   */
+  readonly hidden: boolean;
 }

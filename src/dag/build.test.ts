@@ -11,6 +11,7 @@ const cell = (id: string): Cell => ({
   bodyRange: { start: 0, end: 0 },
   hash: id,
   lazy: false,
+  hidden: false,
 });
 
 const analysis = (reads: string[], writes: string[]): CellAnalysis => ({

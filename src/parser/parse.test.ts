@@ -93,4 +93,13 @@ describe("parseCells", () => {
     );
     expect(cells).toEqual([]);
   });
+
+  test("hidden defaults to false and parses true", async () => {
+    const visible = await parseCells(py("x = 1"));
+    expect(visible[0]!.hidden).toBe(false);
+    const hidden = await parseCells(
+      `#cell(id: "h", lang: "python", hidden: true)[\`\`\`python\nx = 1\n\`\`\`]`,
+    );
+    expect(hidden[0]!.hidden).toBe(true);
+  });
 });
