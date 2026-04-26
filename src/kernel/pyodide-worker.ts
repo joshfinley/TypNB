@@ -73,10 +73,17 @@ const PYODIDE_INDEX = "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/";
 const PY_BOOTSTRAP = `
 import ast
 import io
+import os
 import sys
 import json
 import builtins as _builtins
 import contextlib
+
+# Pyodide's matplotlib defaults to the webagg backend, which does
+# \`from js import document\` and fails in a Web Worker (no DOM here).
+# Force the non-interactive Agg backend before any matplotlib import.
+# Users can still override via os.environ['MPLBACKEND'] = ... in a cell.
+os.environ.setdefault('MPLBACKEND', 'Agg')
 
 # ── static analysis ──────────────────────────────────────────────────────
 
