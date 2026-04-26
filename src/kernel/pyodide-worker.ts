@@ -183,6 +183,23 @@ def __notebook_analyse(source):
 
 # ── execution capture ────────────────────────────────────────────────────
 
+def __notebook_matplotlib_svg(value):
+    """If value is a matplotlib Figure (or has gcf attached), render to SVG."""
+    try:
+        from matplotlib.figure import Figure
+    except ImportError:
+        return None
+    if not isinstance(value, Figure):
+        return None
+    import io
+    buf = io.StringIO()
+    try:
+        value.savefig(buf, format='svg', bbox_inches='tight')
+    except Exception:
+        return None
+    return buf.getvalue()
+
+
 def __notebook_repr(value):
     """Best-effort MIME bundle for a Python value."""
     if value is None:
@@ -216,6 +233,12 @@ def __notebook_repr(value):
                     bundle[mime] = v
             except Exception:
                 pass
+    # matplotlib Figures don't expose _repr_svg_; render via savefig instead.
+    # The default _repr_html_ is a base64 PNG — we prefer SVG for Typst.
+    if 'image/svg+xml' not in bundle:
+        svg = __notebook_matplotlib_svg(value)
+        if svg is not None:
+            bundle['image/svg+xml'] = svg
     if 'text/plain' not in bundle:
         try:
             bundle['text/plain'] = repr(value)

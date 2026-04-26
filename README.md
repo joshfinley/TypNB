@@ -79,7 +79,7 @@ On every edit (300 ms debounce):
 | ------------------- | -------------------------------------------- | ------------------------------------------------ |
 | `typst-passthrough` | `application/x-typst`                        | Power-user escape hatch; passes Typst verbatim.  |
 | `pandas`            | `application/vnd.notebook.dataframe+json`    | Custom MIME emitted by a Pyodide-side helper. **Not yet wired.** |
-| `matplotlib`        | `image/svg+xml`                              | Returns `#image(path)`. Path-write step **not yet wired**. |
+| `matplotlib`        | `image/svg+xml`                              | Inlines SVG via `image(bytes(...), format: "svg")`. |
 | `plain`             | `text/plain`                                 | Fenced raw block. Always-available fallback.     |
 
 Anything not matched renders as a visible **UNSUPPORTED OUTPUT** badge —
@@ -118,9 +118,6 @@ Roughly in priority order:
 - [ ] **pandas DataFrame.** Monkey-patch `DataFrame._repr_mimebundle_` in the
       Pyodide bootstrap to emit `application/vnd.notebook.dataframe+json`,
       then the existing `pandas-dataframe` adapter lights up.
-- [ ] **matplotlib SVG.** Wire the figure-bytes-to-FS step. Either splice the
-      SVG inline (cheaper for small figures) or write to typst.ts's virtual
-      FS via `addSource(...)` and reference by path.
 - [ ] **Sympy → Typst math.** `_repr_latex_` → mitex-style transform → Typst
       math. High value, low surface area; would also light up matplotlib's
       LaTeX text rendering.
