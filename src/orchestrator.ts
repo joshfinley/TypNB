@@ -225,14 +225,19 @@ export class Orchestrator {
 
   private async runCell(cell: Cell): Promise<CellRunResult> {
     if (cell.lang !== "python") {
-      // Non-Python cells are no-ops in v0.
+      // Non-Python cells aren't wired yet. Surface the gap loudly rather
+      // than letting the cell render as a silent green dot — and so any cell
+      // that depends on them (today: nothing, since analyseScope returns
+      // empty for non-python) doesn't look mysteriously stale.
+      const message = `unsupported cell language: ${cell.lang}`;
       return {
         cellId: cell.id,
-        state: "ok",
-        typstOutput: "",
+        state: "error",
+        typstOutput: asErrorBlock(message),
         stdout: "",
         stderr: "",
         durationMs: 0,
+        errorMessage: message,
       };
     }
     const t0 = performance.now();

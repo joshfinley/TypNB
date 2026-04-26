@@ -7,9 +7,9 @@
 export type CellLang = "python" | "javascript" | "typst";
 
 export interface SourceRange {
-  /** Byte offset, inclusive */
+  /** UTF-16 code-unit offset (matches String.prototype.slice / indexOf), inclusive. */
   readonly start: number;
-  /** Byte offset, exclusive */
+  /** UTF-16 code-unit offset, exclusive. */
   readonly end: number;
 }
 

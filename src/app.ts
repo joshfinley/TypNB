@@ -22,48 +22,8 @@ import type { FileSystem } from "./fs/types.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import { PyodideKernel } from "./kernel/pyodide.ts";
 import notebookTemplate from "./templates/notebook.typ?raw";
+import sampleDoc from "./templates/sample.typ?raw";
 import type { NodeStatus } from "./dag/types.ts";
-
-const SAMPLE = `#import "/notebook.typ": *
-#show: notebook.with(title: "Hello, Reactive Typst", kernel: "python")
-
-= Welcome
-
-This notebook combines *Typst* typesetting with *Pyodide*-powered live cells.
-Edit either the prose or the code; the affected cells re-run automatically.
-
-== A first computation
-
-#cell(id: "primes", lang: "python")[\`\`\`python
-def primes_below(n):
-    sieve = [True] * n
-    sieve[:2] = [False, False]
-    for i in range(2, int(n ** 0.5) + 1):
-        if sieve[i]:
-            for j in range(i * i, n, i):
-                sieve[j] = False
-    return [i for i, p in enumerate(sieve) if p]
-
-ps = primes_below(50)
-print("first ten:", ps[:10])
-ps
-\`\`\`]
-
-== Downstream cell
-
-This cell consumes \`ps\` from above. Try changing the limit in the cell above
-from \`50\` to \`200\` and watch this cell re-execute on its own.
-
-#cell(id: "summary", lang: "python")[\`\`\`python
-print("count:", len(ps))
-print("largest:", ps[-1])
-\`\`\`]
-
-== Notes
-
-Cells share Python-runtime state (\`ps\` flows from one to the next) and Typst
-document state (this section's heading numbering carries through).
-`;
 
 export async function mountApp(root: HTMLElement): Promise<void> {
   root.innerHTML = `
@@ -87,8 +47,10 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   const cellsStatus = root.querySelector<HTMLElement>("#cells-status")!;
   const mobileToggle = root.querySelector<HTMLButtonElement>("#mobile-toggle")!;
 
-  const fs: FileSystem = supportsOpfs() ? new OpfsFileSystem() : new MemoryFileSystem();
-  await fs.init();
+  // Capability check + init together. OPFS can also reject at init() time —
+  // private-mode Firefox, certain enterprise policies — so fall through to
+  // the memory FS on any error rather than failing to mount.
+  const fs: FileSystem = await initFileSystem();
   void fs; // wired later when persistence lands
 
   const renderer = await createTypstRenderer();
@@ -137,7 +99,7 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   }
 
   const editor = mountEditor(editorHost, {
-    initialDoc: SAMPLE,
+    initialDoc: sampleDoc,
     onChange: (src) => scheduleUpdate(src),
   });
 
@@ -156,26 +118,45 @@ export async function mountApp(root: HTMLElement): Promise<void> {
 }
 
 function renderCellStatuses(host: HTMLElement, statuses: readonly NodeStatus[]): void {
-  if (statuses.length === 0) {
-    host.textContent = "";
+  // Diff in place: only mutate when the per-cell shape actually changes, so
+  // typing in the editor doesn't replay a full DOM rebuild on every keystroke.
+  if (statuses.length !== host.children.length) {
+    host.replaceChildren(...statuses.map(makeCellDot));
     return;
   }
-  host.innerHTML = statuses
-    .map((s) => {
-      const tip = s.error ? ` title="${escapeAttr(s.error)}"` : s.durationMs ? ` title="${s.durationMs}ms"` : "";
-      return `<span class="cell-dot" data-state="${s.state}"${tip}></span>`;
-    })
-    .join("");
+  for (let i = 0; i < statuses.length; i++) {
+    updateCellDot(host.children[i] as HTMLElement, statuses[i]!);
+  }
 }
 
-function escapeAttr(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+function makeCellDot(s: NodeStatus): HTMLSpanElement {
+  const el = document.createElement("span");
+  el.className = "cell-dot";
+  updateCellDot(el, s);
+  return el;
 }
 
-function supportsOpfs(): boolean {
-  return (
+function updateCellDot(el: HTMLElement, s: NodeStatus): void {
+  if (el.dataset["state"] !== s.state) el.dataset["state"] = s.state;
+  const title = s.error ?? (s.durationMs ? `${s.durationMs}ms` : "");
+  if (el.title !== title) el.title = title;
+}
+
+async function initFileSystem(): Promise<FileSystem> {
+  const opfsAvailable =
     typeof navigator !== "undefined" &&
     "storage" in navigator &&
-    typeof navigator.storage.getDirectory === "function"
-  );
+    typeof navigator.storage.getDirectory === "function";
+  if (opfsAvailable) {
+    try {
+      const opfs = new OpfsFileSystem();
+      await opfs.init();
+      return opfs;
+    } catch (err) {
+      console.warn("OPFS init failed; falling back to in-memory FS:", err);
+    }
+  }
+  const mem = new MemoryFileSystem();
+  await mem.init();
+  return mem;
 }

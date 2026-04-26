@@ -163,8 +163,3 @@ Roughly in priority order:
 - Typst HTML output mode (`--format html`) for an interactive HTML view
   of the notebook alongside the SVG/PDF render.
 
-## Architecture decisions of record
-
-See `/home/josh/.claude/projects/-home-josh-source-play-typst/memory/project_typst_notebook.md`
-(an out-of-tree memory file — captures the design decisions made during the
-greenfield design conversation that produced this scaffold).
