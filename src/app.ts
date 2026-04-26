@@ -1,5 +1,7 @@
 /**
- * Top-level wiring. Composes layers; holds no domain logic itself.
+ * Top-level wiring. Composes layers; helpers live in src/app/*. The bulk
+ * of mountApp is now lifecycle (mount, kernel init, restore state, hook
+ * orchestrator events, mount editor with handlers, register pagehide).
  *
  * Layers, top-down:
  *   ui/           — editor, preview, status (DOM only)
@@ -7,29 +9,48 @@
  *   orchestrator  — parser + DAG + kernel + adapters
  *   parser/       — extracts #cell(...) calls from .typ source
  *   dag/          — reactive DAG over cells
+ *   exec/         — per-cell execution + augmented-source splice
  *   kernel/       — Pyodide in a Web Worker
  *   adapters/     — MIME -> Typst content
  *   fs/           — virtual filesystem (OPFS / memory)
+ *   app/          — persistence, source-edit helpers, topbar DOM
  */
 
-import { mountEditor, type CellMarker, type EditorHandle } from "./ui/editor.ts";
+import { mountEditor, type EditorHandle } from "./ui/editor.ts";
 import { mountPreview } from "./ui/preview.ts";
 import { mountStatus } from "./ui/status.ts";
 import { createTypstRenderer } from "./renderer/typst-wasm.ts";
-import { OpfsFileSystem } from "./fs/opfs.ts";
-import { MemoryFileSystem } from "./fs/memory.ts";
-import type { FileSystem } from "./fs/types.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import { PyodideKernel } from "./kernel/pyodide.ts";
 import notebookTemplate from "./templates/notebook.typ?raw";
 import sampleDoc from "./templates/sample.typ?raw";
 import type { NodeStatus } from "./dag/types.ts";
+import {
+  DOC_PATH,
+  OUTPUTS_PATH,
+  initFileSystem,
+  loadOrSeed,
+  loadPersistedState,
+} from "./app/persist.ts";
+import { findCellArgsRange, toggleHiddenInArgs } from "./app/cells-edit.ts";
+import {
+  mountMobileToggle,
+  renderCellStatuses,
+  toMarkerState,
+} from "./app/topbar.ts";
+
+/** Debounce after the last keystroke before kicking the orchestrator. */
+const PARSE_DEBOUNCE_MS = 300;
+/** Debounce after the last keystroke before persisting the doc to FS. */
+const SAVE_DEBOUNCE_MS = 600;
+/** Debounce after a state-change event before persisting outputs to FS. */
+const OUTPUTS_SAVE_DEBOUNCE_MS = 600;
 
 export async function mountApp(root: HTMLElement): Promise<void> {
   root.innerHTML = `
     <header class="topbar">
       <span class="logo">Notebook</span>
-      <span class="filename" id="fname">untitled.typ</span>
+      <span class="filename" id="fname"></span>
       <span class="cells-status" id="cells-status"></span>
       <span class="spacer"></span>
       <button class="mobile-toggle" id="mobile-toggle" aria-label="Toggle pane">⇄</button>
@@ -46,23 +67,19 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   const statusHost = root.querySelector<HTMLElement>("#status-host")!;
   const cellsStatus = root.querySelector<HTMLElement>("#cells-status")!;
   const mobileToggle = root.querySelector<HTMLButtonElement>("#mobile-toggle")!;
+  const fnameLabel = root.querySelector<HTMLElement>("#fname")!;
+  fnameLabel.textContent = DOC_PATH;
 
-  // Capability check + init together. OPFS can also reject at init() time —
-  // private-mode Firefox, certain enterprise policies — so fall through to
-  // the memory FS on any error rather than failing to mount.
-  const fs: FileSystem = await initFileSystem();
-  const docPath = "/main.typ";
-  const outputsPath = `${docPath}.outputs.json`;
-  const initialDoc = await loadOrSeed(fs, docPath, sampleDoc);
-  const persistedOutputs = await loadPersistedState(fs, outputsPath);
+  const fs = await initFileSystem();
+  const initialDoc = await loadOrSeed(fs, DOC_PATH, sampleDoc);
+  const persistedOutputs = await loadPersistedState(fs, OUTPUTS_PATH);
 
   const renderer = await createTypstRenderer();
   const status = mountStatus(statusHost);
   const preview = mountPreview(previewHost);
 
-  // Kick off Pyodide in the worker. The cold-load takes ~10s on first visit;
-  // surface that via the status pill instead of leaving the user staring at
-  // a "ready" indicator while nothing happens.
+  // Pyodide cold-load takes ~10s; surface that via the status pill instead
+  // of leaving the user staring at a "ready" indicator while nothing happens.
   const kernel = new PyodideKernel();
   let kernelReady = false;
   status.set("kernel-loading");
@@ -77,9 +94,6 @@ export async function mountApp(root: HTMLElement): Promise<void> {
       status.set("error", "kernel init failed");
     });
 
-  // The renderer needs the notebook template available at the import path
-  // referenced from the document. typst.ts uses an in-memory access model
-  // we configure on first use.
   await renderer.setExtraSource("/notebook.typ", notebookTemplate);
 
   // Editor is declared here so the orchestrator callbacks can capture it,
@@ -87,8 +101,6 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   // which is after the assignment.
   let editor: EditorHandle | undefined;
 
-  // Latest per-cell statuses, kept so the gutter markers can colour-code
-  // alongside the topbar dots.
   let lastStatuses: readonly NodeStatus[] = [];
   interface CellSnapshot {
     id: string;
@@ -122,9 +134,9 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     outputsSaveTimer = window.setTimeout(() => {
       const snapshot = orchestrator.getState();
       void fs
-        .writeText(outputsPath, JSON.stringify(snapshot))
-        .catch((err) => console.error(`failed to save ${outputsPath}:`, err));
-    }, 600);
+        .writeText(OUTPUTS_PATH, JSON.stringify(snapshot))
+        .catch((err) => console.error(`failed to save ${OUTPUTS_PATH}:`, err));
+    }, OUTPUTS_SAVE_DEBOUNCE_MS);
   }
 
   const orchestrator = new Orchestrator(kernel, {
@@ -160,13 +172,13 @@ export async function mountApp(root: HTMLElement): Promise<void> {
 
   function scheduleUpdate(source: string) {
     if (compileTimer) clearTimeout(compileTimer);
-    compileTimer = window.setTimeout(() => orchestrator.update(source), 300);
+    compileTimer = window.setTimeout(() => orchestrator.update(source), PARSE_DEBOUNCE_MS);
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => {
-      void fs.writeText(docPath, source).catch((err) =>
-        console.error(`failed to save ${docPath}:`, err),
+      void fs.writeText(DOC_PATH, source).catch((err) =>
+        console.error(`failed to save ${DOC_PATH}:`, err),
       );
-    }, 600);
+    }, SAVE_DEBOUNCE_MS);
   }
 
   async function compile(source: string) {
@@ -192,18 +204,12 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     if (!editor) return;
     const cell = lastCells.find((c) => c.id === cellId);
     if (!cell) return;
-    const doc = editor.getDoc();
-    const cellText = doc.slice(cell.range.start, cell.range.end);
-    const openParen = cellText.indexOf("(");
-    const closeParen = cellText.indexOf(")", openParen);
-    if (openParen < 0 || closeParen < 0) return;
-    const argsStart = cell.range.start + openParen + 1;
-    const argsEnd = cell.range.start + closeParen;
-    const argsText = doc.slice(argsStart, argsEnd);
-    editor.replaceRange(argsStart, argsEnd, toggleHiddenInArgs(argsText));
+    const args = findCellArgsRange(editor.getDoc(), cell.range.start, cell.range.end);
+    if (!args) return;
+    editor.replaceRange(args.argsStart, args.argsEnd, toggleHiddenInArgs(args.argsText));
     // The replaceRange dispatch fires onChange → scheduleUpdate, which
-    // queues a 300ms typing-debounce before the orchestrator parses.
-    // For a deliberate click we want instant feedback: cancel the pending
+    // queues the typing-debounce before the orchestrator parses. For a
+    // deliberate click we want instant feedback: cancel the pending
     // debounce and run the orchestrator now.
     if (compileTimer) {
       clearTimeout(compileTimer);
@@ -245,140 +251,17 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = undefined;
-      if (editor) void fs.writeText(docPath, editor.getDoc()).catch(() => {});
+      if (editor) void fs.writeText(DOC_PATH, editor.getDoc()).catch(() => {});
     }
     if (outputsSaveTimer) {
       clearTimeout(outputsSaveTimer);
       outputsSaveTimer = undefined;
-      void fs.writeText(outputsPath, JSON.stringify(orchestrator.getState())).catch(() => {});
+      void fs.writeText(OUTPUTS_PATH, JSON.stringify(orchestrator.getState())).catch(() => {});
     }
   });
 
-  // Mobile pane toggle (persisted)
-  if (localStorage.getItem("notebook.activePane") === "preview") root.classList.add("show-preview");
-  mobileToggle.addEventListener("click", () => {
-    root.classList.toggle("show-preview");
-    localStorage.setItem(
-      "notebook.activePane",
-      root.classList.contains("show-preview") ? "preview" : "editor",
-    );
-  });
+  mountMobileToggle(root, mobileToggle);
 
   // Initial run
   orchestrator.update(editor.getDoc());
 }
-
-function renderCellStatuses(host: HTMLElement, statuses: readonly NodeStatus[]): void {
-  // Diff in place: only mutate when the per-cell shape actually changes, so
-  // typing in the editor doesn't replay a full DOM rebuild on every keystroke.
-  if (statuses.length !== host.children.length) {
-    host.replaceChildren(...statuses.map(makeCellDot));
-    return;
-  }
-  for (let i = 0; i < statuses.length; i++) {
-    updateCellDot(host.children[i] as HTMLElement, statuses[i]!);
-  }
-}
-
-function makeCellDot(s: NodeStatus): HTMLSpanElement {
-  const el = document.createElement("span");
-  el.className = "cell-dot";
-  updateCellDot(el, s);
-  return el;
-}
-
-function updateCellDot(el: HTMLElement, s: NodeStatus): void {
-  if (el.dataset["state"] !== s.state) el.dataset["state"] = s.state;
-  const title = s.error ?? (s.durationMs ? `${s.durationMs}ms` : "");
-  if (el.title !== title) el.title = title;
-}
-
-/**
- * Toggle the `hidden:` attribute in a `#cell(...)` arg list.
- * - If `hidden: true` is present, removes it (and the surrounding comma if any).
- * - If `hidden: false` is present, flips it to `true`.
- * - Otherwise, appends `hidden: true` (with a leading comma if other args exist).
- */
-function toggleHiddenInArgs(args: string): string {
-  // Match an existing `hidden: bool` attribute with optional surrounding commas.
-  // Captures the boolean so we can flip vs. remove.
-  const HIDDEN_RE = /(,\s*)?hidden\s*:\s*(true|false)(\s*,)?/;
-  const m = args.match(HIDDEN_RE);
-  if (m) {
-    const [whole, leadingComma, value, trailingComma] = m;
-    if (value === "false") {
-      return args.replace(whole, `${leadingComma ?? ""}hidden: true${trailingComma ?? ""}`);
-    }
-    // value === "true": remove the attribute entirely. If we ate a comma on
-    // either side, leave one behind so the remaining args stay valid.
-    const replacement = leadingComma && trailingComma ? "," : "";
-    return args.replace(whole, replacement).trim();
-  }
-  const trimmed = args.trim();
-  return trimmed ? `${trimmed}, hidden: true` : `hidden: true`;
-}
-
-/** Map orchestrator NodeStatus.state to the marker state subset. */
-function toMarkerState(s: NodeStatus["state"] | undefined): CellMarker["state"] {
-  switch (s) {
-    case "ok":
-    case "error":
-    case "running":
-    case "stale":
-      return s;
-    default:
-      return "idle";
-  }
-}
-
-async function loadOrSeed(fs: FileSystem, path: string, seed: string): Promise<string> {
-  try {
-    if (await fs.exists(path)) return await fs.readText(path);
-  } catch (err) {
-    console.warn(`failed to read ${path}; seeding fresh:`, err);
-  }
-  try {
-    await fs.writeText(path, seed);
-  } catch (err) {
-    console.warn(`failed to seed ${path}:`, err);
-  }
-  return seed;
-}
-
-/**
- * Read a previously-persisted orchestrator state from disk. Returns null
- * (with a warning) if the file is missing, unreadable, or corrupt — the
- * orchestrator can rebuild from scratch on the next forced run.
- */
-async function loadPersistedState(fs: FileSystem, path: string): Promise<unknown> {
-  try {
-    if (!(await fs.exists(path))) return null;
-    const raw = await fs.readText(path);
-    return JSON.parse(raw);
-  } catch (err) {
-    console.warn(`failed to load persisted state from ${path}:`, err);
-    return null;
-  }
-}
-
-async function initFileSystem(): Promise<FileSystem> {
-  const opfsAvailable =
-    typeof navigator !== "undefined" &&
-    "storage" in navigator &&
-    typeof navigator.storage.getDirectory === "function";
-  if (opfsAvailable) {
-    try {
-      const opfs = new OpfsFileSystem();
-      await opfs.init();
-      return opfs;
-    } catch (err) {
-      console.warn("OPFS init failed; falling back to in-memory FS:", err);
-    }
-  }
-  const mem = new MemoryFileSystem();
-  await mem.init();
-  return mem;
-}
-
-/** Test-only export. Not part of the public API. */
-export const __test = { toggleHiddenInArgs };

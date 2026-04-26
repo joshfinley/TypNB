@@ -1,7 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { __test } from "./app.ts";
-
-const { toggleHiddenInArgs } = __test;
+import { toggleHiddenInArgs } from "./cells-edit.ts";
 
 describe("toggleHiddenInArgs", () => {
   test("appends hidden: true when no attribute exists", () => {
