@@ -21,6 +21,7 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import { typstLanguage } from "./typst-mode.ts";
+import { pythonHighlight, setPyBodiesEffect } from "./python-highlight.ts";
 
 /** A cell to render a run-button gutter marker against. */
 export interface CellMarker {
@@ -28,7 +29,12 @@ export interface CellMarker {
   readonly from: number;
   /** Document offset just past the cell's last byte; used for line-decoration spans. */
   readonly to: number;
+  /** Range of the cell's source body inside the raw block — fed to the language parser. */
+  readonly bodyFrom: number;
+  readonly bodyTo: number;
   readonly cellId: string;
+  /** Cell's declared language; only "python" gets sub-language highlighting today. */
+  readonly lang: string;
   readonly state: "idle" | "ok" | "stale" | "running" | "error";
 }
 
@@ -173,6 +179,7 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
         cellMarkersField,
         cellLinesField,
         cellGutter,
+        pythonHighlight,
         highlightActiveLine(),
         highlightActiveLineGutter(),
         history(),
@@ -210,7 +217,12 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
     },
     getCursor: () => view.state.selection.main.head,
     setCells: (cells) => {
-      view.dispatch({ effects: setCellsEffect.of(cells) });
+      const pyBodies = cells
+        .filter((c) => c.lang === "python")
+        .map((c) => ({ from: c.bodyFrom, to: c.bodyTo }));
+      view.dispatch({
+        effects: [setCellsEffect.of(cells), setPyBodiesEffect.of(pyBodies)],
+      });
     },
     destroy: () => view.destroy(),
   };

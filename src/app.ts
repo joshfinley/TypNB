@@ -90,7 +90,13 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   // Latest per-cell statuses, kept so the gutter markers can colour-code
   // alongside the topbar dots.
   let lastStatuses: readonly NodeStatus[] = [];
-  let lastCells: readonly { id: string; range: { start: number; end: number } }[] = [];
+  interface CellSnapshot {
+    id: string;
+    lang: string;
+    range: { start: number; end: number };
+    bodyRange: { start: number; end: number };
+  }
+  let lastCells: readonly CellSnapshot[] = [];
 
   function syncEditorMarkers() {
     if (!editor) return;
@@ -99,7 +105,10 @@ export async function mountApp(root: HTMLElement): Promise<void> {
       lastCells.map((c) => ({
         from: c.range.start,
         to: c.range.end,
+        bodyFrom: c.bodyRange.start,
+        bodyTo: c.bodyRange.end,
         cellId: c.id,
+        lang: c.lang,
         state: toMarkerState(stateById.get(c.id)),
       })),
     );
@@ -126,7 +135,12 @@ export async function mountApp(root: HTMLElement): Promise<void> {
       syncEditorMarkers();
     },
     onCells: (cells) => {
-      lastCells = cells.map((c) => ({ id: c.id, range: { ...c.range } }));
+      lastCells = cells.map((c) => ({
+        id: c.id,
+        lang: c.lang,
+        range: { ...c.range },
+        bodyRange: { ...c.bodyRange },
+      }));
       syncEditorMarkers();
     },
     onStateChanged: () => schedulePersistOutputs(),
