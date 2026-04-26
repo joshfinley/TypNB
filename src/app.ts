@@ -58,10 +58,22 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   const status = mountStatus(statusHost);
   const preview = mountPreview(previewHost);
 
-  // Kick off Pyodide in the worker. Fire-and-forget; the orchestrator's first
-  // cell-bearing run will await the kernel via analyseScope.
+  // Kick off Pyodide in the worker. The cold-load takes ~10s on first visit;
+  // surface that via the status pill instead of leaving the user staring at
+  // a "ready" indicator while nothing happens.
   const kernel = new PyodideKernel();
-  void kernel.init().catch((err) => console.error("kernel init failed:", err));
+  let kernelReady = false;
+  status.set("kernel-loading");
+  void kernel
+    .init()
+    .then(() => {
+      kernelReady = true;
+      status.set("ok");
+    })
+    .catch((err) => {
+      console.error("kernel init failed:", err);
+      status.set("error", "kernel init failed");
+    });
 
   // The renderer needs the notebook template available at the import path
   // referenced from the document. typst.ts uses an in-memory access model
@@ -92,13 +104,16 @@ export async function mountApp(root: HTMLElement): Promise<void> {
 
   async function compile(source: string) {
     const ticket = ++inflight;
-    status.set("compiling");
+    // Don't override kernel-loading: that's the more important signal until
+    // Pyodide is up. Compile is independent of the kernel — it's typst.ts —
+    // so we still do the work, just don't flash the status pill.
+    if (kernelReady) status.set("compiling");
     try {
       const t0 = performance.now();
       const result = await renderer.compile(source);
       if (ticket !== inflight) return;
       preview.render(result);
-      status.set("ok", `${Math.round(performance.now() - t0)}ms`);
+      if (kernelReady) status.set("ok", `${Math.round(performance.now() - t0)}ms`);
     } catch (err) {
       if (ticket !== inflight) return;
       preview.renderError(String(err));

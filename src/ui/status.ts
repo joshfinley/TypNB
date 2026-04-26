@@ -4,7 +4,7 @@
  * to render per-cell gutters in the preview.
  */
 
-export type StatusKind = "idle" | "compiling" | "ok" | "error";
+export type StatusKind = "idle" | "compiling" | "ok" | "error" | "kernel-loading";
 
 export interface StatusHandle {
   set(kind: StatusKind, detail?: string): void;
@@ -32,5 +32,7 @@ function labelOf(k: StatusKind): string {
       return "ready";
     case "error":
       return "error";
+    case "kernel-loading":
+      return "loading Python…";
   }
 }
