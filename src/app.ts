@@ -169,6 +169,10 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   let compileTimer: number | undefined;
   let saveTimer: number | undefined;
   let inflight = 0;
+  /** Most recent source we successfully compiled. Used to short-circuit
+   *  re-compiles when a parse fires but the spliced source is identical
+   *  (typing in prose between cells, etc.). */
+  let lastCompiledSource: string | undefined;
 
   function scheduleUpdate(source: string) {
     if (compileTimer) clearTimeout(compileTimer);
@@ -182,6 +186,12 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   }
 
   async function compile(source: string) {
+    // typst.ts compile is the most expensive thing in the per-edit loop
+    // (50–400ms depending on doc size). The orchestrator emits the augmented
+    // source on every parse — even when the parse is just hash bookkeeping
+    // and no cell ran — so most of those emissions land here with the same
+    // source we just compiled. Skip those.
+    if (source === lastCompiledSource) return;
     const ticket = ++inflight;
     // Don't override kernel-loading: that's the more important signal until
     // Pyodide is up. Compile is independent of the kernel — it's typst.ts —
@@ -192,6 +202,7 @@ export async function mountApp(root: HTMLElement): Promise<void> {
       const result = await renderer.compile(source);
       if (ticket !== inflight) return;
       preview.render(result);
+      lastCompiledSource = source;
       if (kernelReady) status.set("ok", `${Math.round(performance.now() - t0)}ms`);
     } catch (err) {
       if (ticket !== inflight) return;
