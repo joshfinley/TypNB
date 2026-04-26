@@ -56,13 +56,41 @@ function toPlainBundle(v: unknown): Record<string, unknown> | null {
   if (v == null) return null;
   if (!isProxy(v)) return null;
   const obj = v.toJs({ dict_converter: Object.fromEntries, depth: -1 }) as Record<string, unknown>;
-  // Walk one level: Uint8Array → keep, otherwise stringify if non-cloneable.
+  return cleanBundle(obj);
+}
+
+function cleanBundle(obj: Record<string, unknown>): Record<string, unknown> {
   for (const [k, val] of Object.entries(obj)) {
     if (val instanceof Uint8Array || typeof val === "string" || typeof val === "number" || typeof val === "boolean") continue;
     if (val == null) continue;
     obj[k] = String(val);
   }
   return obj;
+}
+
+/**
+ * Call `__notebook_post_execute(value)` to capture and close any open
+ * matplotlib figures. Returns the figure bundles as plain objects (postMessage-safe).
+ */
+function capturePendingFigures(
+  py: PyodideInterface,
+  value: unknown,
+): Record<string, unknown>[] {
+  const fn = py.globals.get("__notebook_post_execute");
+  if (!fn) return [];
+  let proxy: unknown;
+  try {
+    proxy = (fn as unknown as (v: unknown) => unknown)(value);
+  } finally {
+    (fn as unknown as PyProxyLike).destroy();
+  }
+  if (!isProxy(proxy)) return [];
+  const arr = (proxy as PyProxyLike).toJs({
+    dict_converter: Object.fromEntries,
+    depth: -1,
+  }) as Record<string, unknown>[];
+  (proxy as PyProxyLike).destroy();
+  return arr.map(cleanBundle);
 }
 let py: PyodideInterface | null = null;
 let initPromise: Promise<PyodideInterface> | null = null;
@@ -252,6 +280,40 @@ def __notebook_repr(value):
         except Exception:
             bundle['text/plain'] = '<unrepr-able>'
     return bundle
+
+
+def __notebook_post_execute(result_value):
+    """Render and close any open matplotlib figures.
+
+    Returns a list of MIME bundles for figures NOT represented by
+    result_value, so a cell ending in 'plt.gcf()' doesn't double-render.
+    Closing every open figure prevents accumulation across cells —
+    matching Jupyter's %matplotlib inline post-execute behaviour.
+    """
+    bundles = []
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return bundles
+    try:
+        from matplotlib.figure import Figure
+        result_fig_num = result_value.number if isinstance(result_value, Figure) else None
+    except Exception:
+        result_fig_num = None
+    for num in plt.get_fignums():
+        if num == result_fig_num:
+            continue
+        fig = plt.figure(num)
+        bundle = __notebook_repr(fig)
+        if bundle:
+            bundles.append(bundle)
+        plt.close(fig)
+    if result_fig_num is not None:
+        try:
+            plt.close(plt.figure(result_fig_num))
+        except Exception:
+            pass
+    return bundles
 `;
 
 async function ensureInit(): Promise<PyodideInterface> {
@@ -309,17 +371,36 @@ ctx.addEventListener("message", async (e: MessageEvent<Request>) => {
           // runPythonAsync evaluates the source as a top-level module and
           // returns the value of the final expression (matching IPython).
           const value = await py.runPythonAsync(req.source);
+
+          // 1. Compute the result bundle while figures are still open
+          //    (matplotlib savefig fails after plt.close).
+          let resultBundle: Record<string, unknown> | null = null;
           if (value !== undefined && value !== null) {
             const reprFn = py.globals.get("__notebook_repr");
             const bundleProxy = reprFn(value) as unknown;
             reprFn.destroy();
-            const bundle = toPlainBundle(bundleProxy);
-            if (bundle && Object.keys(bundle).length > 0) {
-              post({ id: req.id, type: "stream", event: { kind: "result", data: bundle } });
-            }
+            resultBundle = toPlainBundle(bundleProxy);
             if (isProxy(bundleProxy)) bundleProxy.destroy();
-            if (isProxy(value)) (value as PyProxyLike).destroy();
           }
+
+          // 2. Capture any other open matplotlib figures as display events.
+          //    `__notebook_post_execute(value)` excludes the figure that
+          //    matches the result (so we don't double-render), then closes
+          //    every open figure — matches Jupyter's inline behaviour where
+          //    figures don't persist across cell executions.
+          const figureBundles = capturePendingFigures(py, value);
+
+          // Emit displays first, then the result. Order matches the
+          // execution order the user expects: figures created mid-cell
+          // appear before the cell's final value.
+          for (const fig of figureBundles) {
+            post({ id: req.id, type: "stream", event: { kind: "display", data: fig } });
+          }
+          if (resultBundle && Object.keys(resultBundle).length > 0) {
+            post({ id: req.id, type: "stream", event: { kind: "result", data: resultBundle } });
+          }
+          if (isProxy(value)) (value as PyProxyLike).destroy();
+
           post({ id: req.id, type: "result", value: null });
         } catch (err) {
           const e = err as { name?: string; message?: string; stack?: string };
