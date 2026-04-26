@@ -201,6 +201,15 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     const argsEnd = cell.range.start + closeParen;
     const argsText = doc.slice(argsStart, argsEnd);
     editor.replaceRange(argsStart, argsEnd, toggleHiddenInArgs(argsText));
+    // The replaceRange dispatch fires onChange → scheduleUpdate, which
+    // queues a 300ms typing-debounce before the orchestrator parses.
+    // For a deliberate click we want instant feedback: cancel the pending
+    // debounce and run the orchestrator now.
+    if (compileTimer) {
+      clearTimeout(compileTimer);
+      compileTimer = undefined;
+    }
+    orchestrator.update(editor.getDoc());
   }
 
   editor = mountEditor(editorHost, {
