@@ -1,5 +1,7 @@
-import { EditorState, StateEffect, StateField, RangeSet } from "@codemirror/state";
+import { EditorState, StateEffect, StateField, RangeSet, RangeSetBuilder } from "@codemirror/state";
 import {
+  Decoration,
+  type DecorationSet,
   EditorView,
   drawSelection,
   gutter,
@@ -12,12 +14,20 @@ import {
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import { bracketMatching, indentOnInput } from "@codemirror/language";
+import {
+  bracketMatching,
+  defaultHighlightStyle,
+  indentOnInput,
+  syntaxHighlighting,
+} from "@codemirror/language";
+import { typstLanguage } from "./typst-mode.ts";
 
 /** A cell to render a run-button gutter marker against. */
 export interface CellMarker {
   /** Document offset of the cell's first byte (the line that begins `#cell(...)`). */
   readonly from: number;
+  /** Document offset just past the cell's last byte; used for line-decoration spans. */
+  readonly to: number;
   readonly cellId: string;
   readonly state: "idle" | "ok" | "stale" | "running" | "error";
 }
@@ -105,6 +115,49 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
     },
   });
 
+  // Line decorations spanning each cell's range. Pure visual delineation
+  // (not in the source, doesn't affect copy) — gives the user a sense of
+  // where one cell ends and the next begins without intrusive markup.
+  const cellLineDeco = Decoration.line({ class: "cm-cell-line" });
+  const cellLineFirstDeco = Decoration.line({ class: "cm-cell-line cm-cell-line-first" });
+  const cellLineLastDeco = Decoration.line({ class: "cm-cell-line cm-cell-line-last" });
+
+  const cellLinesField = StateField.define<DecorationSet>({
+    create: () => Decoration.none,
+    update(set, tr) {
+      set = set.map(tr.changes);
+      for (const e of tr.effects) {
+        if (e.is(setCellsEffect)) set = buildLineDecorations(tr.state.doc, e.value);
+      }
+      return set;
+    },
+    provide: (f) => EditorView.decorations.from(f),
+  });
+
+  function buildLineDecorations(
+    doc: EditorState["doc"],
+    cells: readonly CellMarker[],
+  ): DecorationSet {
+    if (cells.length === 0) return Decoration.none;
+    const sorted = [...cells].sort((a, b) => a.from - b.from);
+    const builder = new RangeSetBuilder<Decoration>();
+    for (const cell of sorted) {
+      const startLine = doc.lineAt(Math.min(cell.from, doc.length));
+      const endLine = doc.lineAt(Math.min(cell.to, doc.length));
+      for (let n = startLine.number; n <= endLine.number; n++) {
+        const line = doc.line(n);
+        const deco =
+          n === startLine.number
+            ? cellLineFirstDeco
+            : n === endLine.number
+              ? cellLineLastDeco
+              : cellLineDeco;
+        builder.add(line.from, line.from, deco);
+      }
+    }
+    return builder.finish();
+  }
+
   const cellGutter = gutter({
     class: "cm-cell-gutter",
     markers: (view) => view.state.field(cellMarkersField),
@@ -118,6 +171,7 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
       extensions: [
         lineNumbers(),
         cellMarkersField,
+        cellLinesField,
         cellGutter,
         highlightActiveLine(),
         highlightActiveLineGutter(),
@@ -126,6 +180,8 @@ export function mountEditor(host: HTMLElement, opts: EditorOptions): EditorHandl
         bracketMatching(),
         indentOnInput(),
         highlightSelectionMatches(),
+        typstLanguage,
+        syntaxHighlighting(defaultHighlightStyle),
         keymap.of([...extras, indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
         EditorView.updateListener.of((v) => {
           if (v.docChanged) opts.onChange(v.state.doc.toString());

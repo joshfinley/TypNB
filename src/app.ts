@@ -98,6 +98,7 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     editor.setCells(
       lastCells.map((c) => ({
         from: c.range.start,
+        to: c.range.end,
         cellId: c.id,
         state: toMarkerState(stateById.get(c.id)),
       })),

@@ -54,6 +54,23 @@ body { font: 13px/1.4 var(--sans); color: var(--text); background: var(--bg); }
 .cells-status .cell-dot[data-state="error"] { background: var(--err); }
 .cells-status .cell-dot[data-state="idle"] { background: #d1d5db; opacity: 0.5; }
 
+/* Faint visual delineation for cell regions. Pure decoration —
+   not part of the source, doesn't get copied. */
+.cm-cell-line {
+  background: rgba(124, 58, 237, 0.04);
+  box-shadow: inset 2px 0 0 rgba(124, 58, 237, 0.35);
+}
+.cm-cell-line-first {
+  box-shadow:
+    inset 2px 0 0 rgba(124, 58, 237, 0.35),
+    inset 0 1px 0 rgba(124, 58, 237, 0.18);
+}
+.cm-cell-line-last {
+  box-shadow:
+    inset 2px 0 0 rgba(124, 58, 237, 0.35),
+    inset 0 -1px 0 rgba(124, 58, 237, 0.18);
+}
+
 /* Per-cell run button in the editor gutter. */
 .cm-cell-gutter { width: 22px; }
 .cm-run-cell {
