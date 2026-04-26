@@ -139,8 +139,6 @@ Roughly in priority order:
 
 ### Editor UX
 
-- [ ] **Typst syntax highlighting.** Port the StreamLanguage grammar from
-      the sibling Typst playground.
 - [ ] **`/cell` and `/py` snippet expansion.** Type `/py`, hit Tab, get a
       `#cell(id:..., lang: "python")[...]` skeleton with the cursor in the body.
 
