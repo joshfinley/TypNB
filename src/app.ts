@@ -24,6 +24,7 @@ import { Orchestrator } from "./orchestrator.ts";
 import { PyodideKernel } from "./kernel/pyodide.ts";
 import notebookTemplate from "./templates/notebook.typ?raw";
 import sampleDoc from "./templates/sample.typ?raw";
+import blankDoc from "./templates/blank.typ?raw";
 import type { NodeStatus } from "./dag/types.ts";
 import { initFileSystem, loadOrSeed, loadPersistedState } from "./app/persist.ts";
 import { findCellArgsRange, toggleHiddenInArgs } from "./app/cells-edit.ts";
@@ -284,7 +285,11 @@ export async function mountApp(root: HTMLElement): Promise<void> {
       return;
     }
     try {
-      await createNotebook(fs, path, sampleDoc);
+      // Seed new notebooks with the blank template, not the full sample.
+      // Otherwise every new notebook reads as a copy of the default
+      // /main.typ (which is also seeded from sample) and looks like it
+      // auto-populated with the previous notebook's content.
+      await createNotebook(fs, path, blankDoc);
     } catch (err) {
       window.alert((err as Error).message);
       return;
