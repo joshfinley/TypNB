@@ -47,8 +47,12 @@ function clientLogPlugin(): Plugin {
   };
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [clientLogPlugin()],
+  // GitHub Pages serves at /TypNB/; Vite asset URLs need that prefix in
+  // the build output. Dev keeps its bare /. (clientLogPlugin's `apply:
+  // "serve"` already handles its own dev-only scoping.)
+  base: command === "build" ? "/TypNB/" : "/",
   server: {
     port: 5173,
     fs: { strict: true },
@@ -63,4 +67,4 @@ export default defineConfig({
   worker: {
     format: "es",
   },
-});
+}));
