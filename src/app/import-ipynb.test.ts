@@ -116,4 +116,27 @@ describe("markdownToTypst", () => {
     expect(out).toContain("First para.");
     expect(out).toContain("Second para.");
   });
+
+  test("display math becomes a latex raw block (not Typst math)", () => {
+    const md = "before\n$$\n\\sqrt{25}\n$$\nafter";
+    const out = markdownToTypst(md);
+    // Render the LaTeX as code so Typst doesn't try to parse it as math
+    // and choke on `\sqrt{...}` (Typst uses `sqrt(...)`).
+    expect(out).toContain("```latex\n\\sqrt{25}\n```");
+  });
+
+  test("inline math becomes inline raw, preserving subscripts/superscripts", () => {
+    expect(markdownToTypst("see $a_1^2 + b_2^2$ here")).toBe(
+      "see `a_1^2 + b_2^2` here",
+    );
+  });
+
+  test("math content is shielded from later emphasis transforms", () => {
+    // a_1 has an underscore; without protection the bold/italic passes
+    // could break it (or downstream Typst could try to italicise it).
+    const md = "$a_1 \\cdot b_1$ then *separate*";
+    const out = markdownToTypst(md);
+    expect(out).toContain("`a_1 \\cdot b_1`");
+    expect(out).toContain("_separate_");
+  });
 });
