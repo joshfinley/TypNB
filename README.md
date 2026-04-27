@@ -1,5 +1,8 @@
 # TypNB
 
+**[→ Try it now in your browser](https://joshfinley.github.io/TypNB/)**
+(no install, no signup — first load downloads ~12MB of WASM, cached after that)
+
 A notebook that pairs **Typst** typesetting with **Pyodide**-powered live
 cells. Browser-native (no server, no Node runtime needed at runtime),
 manual cell execution with a reactive dependency DAG that tells you what's
@@ -175,9 +178,10 @@ Roughly in priority order:
 This codebase was written collaboratively with Claude (Claude Opus 4.7
 via Claude Code). Almost all lines of code are model-generated with
 opinionated human feedback. If this seems like a deal-breaker despite
-the tool seeming useful, consider giving it a try anyway! I've already
-started using TypNB for some personal projects and have been happy
-with it, and feedback in the form of issues or commits is welcome.
+the tool seeming useful, consider [giving it a try](https://joshfinley.github.io/TypNB/)
+anyway! I've already started using TypNB for some personal projects and
+have been happy with it, and feedback in the form of issues or commits is
+welcome.
 
 Most commits carry a `Co-Authored-By: Claude` trailer if you want to
 trace the provenance.

@@ -5,8 +5,37 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TypNB</title>
   <link rel="stylesheet" href="/src/ui/style.css" />
+  <style>
+    /* Inline loader so it paints before the JS bundle parses. Colours are
+       hard-coded to match the --bg / --muted / --accent palette in style.css
+       since that stylesheet may not be parsed yet either. */
+    #initial-loader {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 14px;
+      background: #eff0f3;
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: #6b6a75;
+      z-index: 9999;
+      transition: opacity 200ms ease-out;
+    }
+    #initial-loader.fade-out { opacity: 0; pointer-events: none; }
+    #initial-loader .spinner {
+      width: 28px; height: 28px;
+      border: 3px solid #e3e3e9;
+      border-top-color: #239dad;
+      border-radius: 50%;
+      animation: tnb-spin 0.8s linear infinite;
+    }
+    @keyframes tnb-spin { to { transform: rotate(360deg); } }
+  </style>
 </head>
 <body>
+  <div id="initial-loader" aria-live="polite" aria-busy="true">
+    <div class="spinner" aria-hidden="true"></div>
+    <div>Loading TypNB…</div>
+  </div>
   <div id="app"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
