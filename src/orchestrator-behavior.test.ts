@@ -187,4 +187,23 @@ describe("Orchestrator manual-mode behaviour", () => {
     expect(last).toContain("#cell-output[");
     expect(last).toContain("hello");
   });
+
+  test("preserves newlines across multiple stdout chunks (regression)", async () => {
+    // Pyodide's batched callback delivers each line WITHOUT its trailing
+    // newline; the worker re-appends "\n" before posting events. If that
+    // ever regresses, multiple print() calls collapse onto one line.
+    const { kernel, o, r } = await freshOrchestrator();
+    kernel.events.set("x = 1\n", [
+      { kind: "stdout", data: "first\n" },
+      { kind: "stdout", data: "second\n" },
+    ]);
+    o.update(cellSrc("a", "x = 1"));
+    await settle();
+    o.forceRun("a");
+    await settle();
+    const last = r.augmented.at(-1)!;
+    // Both lines present, in order, with a real newline between them
+    // (not just adjacent text — that would be the regression).
+    expect(last).toMatch(/first\nsecond/);
+  });
 });

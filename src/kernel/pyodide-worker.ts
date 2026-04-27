@@ -139,10 +139,14 @@ ctx.addEventListener("message", async (e: MessageEvent<Request>) => {
       }
       case "execute": {
         const py = await ensureInit();
-        // Stream stdout/stderr as events.
+        // Stream stdout/stderr as events. Pyodide's `batched` callback
+        // delivers each line WITHOUT its trailing newline (per its API
+        // contract), so we re-append it before forwarding — otherwise
+        // `print("a"); print("b")` arrives as ["a", "b"], joined to "ab"
+        // by the orchestrator's runCell, and the newline is lost.
         const flushAndStream = (kind: "stdout" | "stderr") => (s: string) => {
           if (s.length === 0) return;
-          post({ id: req.id, type: "stream", event: { kind, data: s } });
+          post({ id: req.id, type: "stream", event: { kind, data: s + "\n" } });
         };
         py.setStdout({ batched: flushAndStream("stdout") });
         py.setStderr({ batched: flushAndStream("stderr") });
