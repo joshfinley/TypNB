@@ -1,7 +1,7 @@
 /**
  * Top-level wiring. Composes layers; helpers live in src/app/*. The bulk
  * of mountApp is now lifecycle (mount, kernel init, restore state, hook
- * orchestrator events, mount editor with handlers, register pagehide).
+ * orchestrator events, mount editor, register pagehide).
  *
  * Layers, top-down:
  *   ui/           — editor, preview, status (DOM only)
@@ -13,7 +13,7 @@
  *   kernel/       — Pyodide in a Web Worker
  *   adapters/     — MIME -> Typst content
  *   fs/           — virtual filesystem (OPFS / memory)
- *   app/          — persistence, source-edit helpers, topbar DOM
+ *   app/          — persistence, source-edit helpers, topbar DOM, file mgmt
  */
 
 import { mountEditor, type EditorHandle } from "./ui/editor.ts";
@@ -25,19 +25,25 @@ import { PyodideKernel } from "./kernel/pyodide.ts";
 import notebookTemplate from "./templates/notebook.typ?raw";
 import sampleDoc from "./templates/sample.typ?raw";
 import type { NodeStatus } from "./dag/types.ts";
-import {
-  DOC_PATH,
-  OUTPUTS_PATH,
-  initFileSystem,
-  loadOrSeed,
-  loadPersistedState,
-} from "./app/persist.ts";
+import { initFileSystem, loadOrSeed, loadPersistedState } from "./app/persist.ts";
 import { findCellArgsRange, toggleHiddenInArgs } from "./app/cells-edit.ts";
 import {
   mountMobileToggle,
   renderCellStatuses,
   toMarkerState,
 } from "./app/topbar.ts";
+import {
+  createNotebook,
+  deleteNotebook,
+  getActivePath,
+  listNotebooks,
+  nameFromPath,
+  outputsPathFor,
+  pathFromName,
+  renameNotebook,
+  setActivePath,
+} from "./app/files.ts";
+import { mountFileMenu } from "./app/file-menu.ts";
 
 /** Debounce after the last keystroke before kicking the orchestrator. */
 const PARSE_DEBOUNCE_MS = 300;
@@ -68,11 +74,14 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   const cellsStatus = root.querySelector<HTMLElement>("#cells-status")!;
   const mobileToggle = root.querySelector<HTMLButtonElement>("#mobile-toggle")!;
   const fnameLabel = root.querySelector<HTMLElement>("#fname")!;
-  fnameLabel.textContent = DOC_PATH;
 
   const fs = await initFileSystem();
-  const initialDoc = await loadOrSeed(fs, DOC_PATH, sampleDoc);
-  const persistedOutputs = await loadPersistedState(fs, OUTPUTS_PATH);
+  let currentPath = getActivePath();
+  // Make sure the active file actually exists; if it was deleted out-of-band
+  // (e.g. another tab), fall back to /main.typ which loadOrSeed creates.
+  const initialDoc = await loadOrSeed(fs, currentPath, sampleDoc);
+  setActivePath(currentPath);
+  const initialOutputs = await loadPersistedState(fs, outputsPathFor(currentPath));
 
   const renderer = await createTypstRenderer();
   const status = mountStatus(statusHost);
@@ -133,9 +142,10 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     if (outputsSaveTimer) clearTimeout(outputsSaveTimer);
     outputsSaveTimer = window.setTimeout(() => {
       const snapshot = orchestrator.getState();
+      const target = outputsPathFor(currentPath);
       void fs
-        .writeText(OUTPUTS_PATH, JSON.stringify(snapshot))
-        .catch((err) => console.error(`failed to save ${OUTPUTS_PATH}:`, err));
+        .writeText(target, JSON.stringify(snapshot))
+        .catch((err) => console.error(`failed to save ${target}:`, err));
     }, OUTPUTS_SAVE_DEBOUNCE_MS);
   }
 
@@ -164,7 +174,7 @@ export async function mountApp(root: HTMLElement): Promise<void> {
   // Restore cached outputs/analyses BEFORE the first update — otherwise
   // the first parse runs with empty knownHash, marks every cell changed,
   // and the augmented source compiles without any cell outputs spliced in.
-  if (persistedOutputs) orchestrator.restoreState(persistedOutputs);
+  if (initialOutputs) orchestrator.restoreState(initialOutputs);
 
   let compileTimer: number | undefined;
   let saveTimer: number | undefined;
@@ -178,9 +188,10 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     if (compileTimer) clearTimeout(compileTimer);
     compileTimer = window.setTimeout(() => orchestrator.update(source), PARSE_DEBOUNCE_MS);
     if (saveTimer) clearTimeout(saveTimer);
+    const target = currentPath;
     saveTimer = window.setTimeout(() => {
-      void fs.writeText(DOC_PATH, source).catch((err) =>
-        console.error(`failed to save ${DOC_PATH}:`, err),
+      void fs.writeText(target, source).catch((err) =>
+        console.error(`failed to save ${target}:`, err),
       );
     }, SAVE_DEBOUNCE_MS);
   }
@@ -193,9 +204,6 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     // source we just compiled. Skip those.
     if (source === lastCompiledSource) return;
     const ticket = ++inflight;
-    // Don't override kernel-loading: that's the more important signal until
-    // Pyodide is up. Compile is independent of the kernel — it's typst.ts —
-    // so we still do the work, just don't flash the status pill.
     if (kernelReady) status.set("compiling");
     try {
       const t0 = performance.now();
@@ -218,16 +226,138 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     const args = findCellArgsRange(editor.getDoc(), cell.range.start, cell.range.end);
     if (!args) return;
     editor.replaceRange(args.argsStart, args.argsEnd, toggleHiddenInArgs(args.argsText));
-    // The replaceRange dispatch fires onChange → scheduleUpdate, which
-    // queues the typing-debounce before the orchestrator parses. For a
-    // deliberate click we want instant feedback: cancel the pending
-    // debounce and run the orchestrator now.
     if (compileTimer) {
       clearTimeout(compileTimer);
       compileTimer = undefined;
     }
     orchestrator.update(editor.getDoc());
   }
+
+  /**
+   * Switch the open notebook to `nextPath`. Flushes any pending save of
+   * the outgoing file, then resets the orchestrator and editor for the
+   * incoming one. Source / outputs are loaded from disk; if the new file
+   * is fresh it gets seeded from the sample template (matching how a
+   * brand-new notebook just-created via the menu shows something useful).
+   */
+  async function switchToFile(nextPath: string): Promise<void> {
+    if (nextPath === currentPath) return;
+    // Flush outgoing file's pending writes synchronously into the request
+    // queue so the next reload sees current state, even if the user
+    // immediately reloads after switching.
+    if (saveTimer && editor) {
+      clearTimeout(saveTimer);
+      saveTimer = undefined;
+      const outgoingPath = currentPath;
+      const outgoingDoc = editor.getDoc();
+      void fs.writeText(outgoingPath, outgoingDoc).catch(() => {});
+    }
+    if (outputsSaveTimer) {
+      clearTimeout(outputsSaveTimer);
+      outputsSaveTimer = undefined;
+      const outgoingOutputs = outputsPathFor(currentPath);
+      void fs.writeText(outgoingOutputs, JSON.stringify(orchestrator.getState())).catch(() => {});
+    }
+
+    currentPath = nextPath;
+    setActivePath(nextPath);
+    fileMenu.refresh();
+
+    const newDoc = await loadOrSeed(fs, nextPath, sampleDoc);
+    const newOutputs = await loadPersistedState(fs, outputsPathFor(nextPath));
+
+    orchestrator.reset();
+    if (newOutputs) orchestrator.restoreState(newOutputs);
+    lastCompiledSource = undefined;
+    if (editor) editor.setDoc(newDoc);
+    orchestrator.update(newDoc);
+  }
+
+  async function createNewNotebook(): Promise<void> {
+    const name = window.prompt("New notebook name (.typ):", "scratch");
+    if (name == null) return;
+    let path: string;
+    try {
+      path = pathFromName(name);
+    } catch (err) {
+      window.alert((err as Error).message);
+      return;
+    }
+    try {
+      await createNotebook(fs, path, sampleDoc);
+    } catch (err) {
+      window.alert((err as Error).message);
+      return;
+    }
+    await switchToFile(path);
+  }
+
+  async function renameCurrent(): Promise<void> {
+    const current = nameFromPath(currentPath);
+    const name = window.prompt("Rename notebook to:", current);
+    if (name == null) return;
+    let nextPath: string;
+    try {
+      nextPath = pathFromName(name);
+    } catch (err) {
+      window.alert((err as Error).message);
+      return;
+    }
+    if (nextPath === currentPath) return;
+    // Flush the outgoing file's pending writes BEFORE the rename moves
+    // the doc out from under the saver — otherwise scheduleUpdate's
+    // lingering writeText() lands at the OLD path and re-creates it.
+    if (saveTimer && editor) {
+      clearTimeout(saveTimer);
+      saveTimer = undefined;
+      await fs.writeText(currentPath, editor.getDoc()).catch(() => {});
+    }
+    if (outputsSaveTimer) {
+      clearTimeout(outputsSaveTimer);
+      outputsSaveTimer = undefined;
+      await fs.writeText(outputsPathFor(currentPath), JSON.stringify(orchestrator.getState()))
+        .catch(() => {});
+    }
+    try {
+      await renameNotebook(fs, currentPath, nextPath);
+    } catch (err) {
+      window.alert((err as Error).message);
+      return;
+    }
+    currentPath = nextPath;
+    setActivePath(nextPath);
+    fileMenu.refresh();
+  }
+
+  async function deleteCurrent(): Promise<void> {
+    const ok = window.confirm(`Delete ${nameFromPath(currentPath)}? This cannot be undone.`);
+    if (!ok) return;
+    const toDelete = currentPath;
+    // Pick a fallback to switch to. If only one notebook exists, we'll
+    // create a fresh /main.typ from the sample.
+    const remaining = (await listNotebooks(fs)).filter((n) => n.path !== toDelete);
+    const next = remaining[0]?.path ?? "/main.typ";
+    // Cancel any pending writes against the doc we're deleting so they
+    // can't resurrect it after deleteNotebook.
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = undefined; }
+    if (outputsSaveTimer) { clearTimeout(outputsSaveTimer); outputsSaveTimer = undefined; }
+    await deleteNotebook(fs, toDelete);
+    if (next === toDelete) {
+      // shouldn't happen given the filter above, but guard anyway
+      currentPath = "/main.typ";
+      setActivePath(currentPath);
+    }
+    await switchToFile(next);
+  }
+
+  const fileMenu = mountFileMenu(fnameLabel, {
+    list: () => listNotebooks(fs),
+    currentPath: () => currentPath,
+    open: switchToFile,
+    createNew: createNewNotebook,
+    renameCurrent,
+    deleteCurrent,
+  });
 
   editor = mountEditor(editorHost, {
     initialDoc,
@@ -255,19 +385,18 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     ],
   });
 
-  // Flush any pending debounced saves before navigation. Async writes
-  // during pagehide aren't guaranteed to complete, but OPFS resolves
-  // quickly enough in practice.
+  // Flush any pending debounced saves before navigation.
   window.addEventListener("pagehide", () => {
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = undefined;
-      if (editor) void fs.writeText(DOC_PATH, editor.getDoc()).catch(() => {});
+      if (editor) void fs.writeText(currentPath, editor.getDoc()).catch(() => {});
     }
     if (outputsSaveTimer) {
       clearTimeout(outputsSaveTimer);
       outputsSaveTimer = undefined;
-      void fs.writeText(OUTPUTS_PATH, JSON.stringify(orchestrator.getState())).catch(() => {});
+      void fs.writeText(outputsPathFor(currentPath), JSON.stringify(orchestrator.getState()))
+        .catch(() => {});
     }
   });
 

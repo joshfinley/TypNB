@@ -3,16 +3,13 @@
  * reload-relevant state. Both live in OPFS when available, in-memory when
  * not (private-mode Firefox, enterprise lockdowns, etc.).
  *
- * Single-doc for now — `DOC_PATH` and the derived `OUTPUTS_PATH` are
- * constants. Multi-file support will parameterise these via a doc-id arg.
+ * Path resolution lives in app/files.ts; this module is just FS init plus
+ * the read-with-fallback helpers used by the load path.
  */
 
 import { MemoryFileSystem } from "../fs/memory.ts";
 import { OpfsFileSystem } from "../fs/opfs.ts";
 import type { FileSystem } from "../fs/types.ts";
-
-export const DOC_PATH = "/main.typ";
-export const OUTPUTS_PATH = `${DOC_PATH}.outputs.json`;
 
 /** Capability check + init together. Falls through to memory FS on error. */
 export async function initFileSystem(): Promise<FileSystem> {

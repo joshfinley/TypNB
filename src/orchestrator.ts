@@ -128,6 +128,23 @@ export class Orchestrator {
     return null;
   }
 
+  /**
+   * Wipe all reload-relevant caches. Used when switching between notebook
+   * files so the new file's state isn't contaminated by the previous one.
+   * Does not touch the drain queue — any in-flight runOnce will see the
+   * cleared `currentSource` and skip its emit, which is what we want.
+   */
+  reset(): void {
+    this.outputCache.clear();
+    this.analysisCache.clear();
+    this.knownHash.clear();
+    this.prevWrites.clear();
+    this.currentCells = [];
+    this.forcedSet.clear();
+    this.forceAll = false;
+    this.currentSource = "";
+  }
+
   /** Snapshot the reload-relevant state in a JSON-friendly shape. */
   getState(): PersistedState {
     return {
