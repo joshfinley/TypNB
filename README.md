@@ -1,10 +1,13 @@
-# notebook
+# TypNB
 
 A notebook that pairs **Typst** typesetting with **Pyodide**-powered live
 cells. Browser-native (no server, no Node runtime needed at runtime),
 manual cell execution with a reactive dependency DAG that tells you what's
 stale, and outputs render as first-class Typst content rather than degraded
 fallbacks.
+
+> Not affiliated with the [Typst](https://typst.app) project — TypNB is a
+> downstream tool that uses Typst as a rendering backend.
 
 Status: **prototype**. Python cells run end-to-end, share state, persist
 their outputs in OPFS, and the user runs them on demand (▶ in the gutter,
@@ -167,3 +170,14 @@ Roughly in priority order:
 - Typst HTML output mode (`--format html`) for an interactive HTML view
   of the notebook alongside the SVG/PDF render.
 
+## Colophon
+
+This codebase was written collaboratively with Claude (Claude Opus 4.7
+via Claude Code). Almost all lines of code are model-generated with
+opinionated human feedback. If this seems like a deal-breaker despite
+the tool seeming useful, consider giving it a try anyway! I've already
+started using TypNB for some personal projects and have been happy
+with it, and feedback in the form of issues or commits is welcome.
+
+Most commits carry a `Co-Authored-By: Claude` trailer if you want to
+trace the provenance.

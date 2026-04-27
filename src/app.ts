@@ -57,7 +57,7 @@ const OUTPUTS_SAVE_DEBOUNCE_MS = 600;
 export async function mountApp(root: HTMLElement): Promise<void> {
   root.innerHTML = `
     <header class="topbar">
-      <span class="logo">Notebook</span>
+      <span class="logo">TypNB</span>
       <span class="filename" id="fname"></span>
       <span class="cells-status" id="cells-status"></span>
       <span class="spacer"></span>

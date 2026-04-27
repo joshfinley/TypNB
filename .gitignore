@@ -19,3 +19,6 @@ dist/
 
 # bun
 .bun/
+
+# claude code session state — not meant for the repo
+.claude/
