@@ -131,6 +131,13 @@ describe("markdownToTypst", () => {
     );
   });
 
+  test("converts star bullets to dash bullets so Typst doesn't read them as bold", () => {
+    // Markdown allows `* item`; Typst's `*` is bold and would eat across
+    // paragraphs trying to find a closing `*`. Convert to `- item`.
+    const md = "* one\n* two\n  * nested";
+    expect(markdownToTypst(md)).toBe("- one\n- two\n  - nested");
+  });
+
   test("math content is shielded from later emphasis transforms", () => {
     // a_1 has an underscore; without protection the bold/italic passes
     // could break it (or downstream Typst could try to italicise it).
