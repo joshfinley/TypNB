@@ -18,6 +18,8 @@ export interface FileMenuActions {
   open(path: string): Promise<void>;
   /** Create a new notebook (prompts for name). */
   createNew(): Promise<void>;
+  /** Import a Jupyter notebook (.ipynb) — opens a file picker. */
+  importIpynb(): Promise<void>;
   /** Rename the currently-open notebook (prompts for new name). */
   renameCurrent(): Promise<void>;
   /** Delete the currently-open notebook (confirms first). */
@@ -64,6 +66,10 @@ export function mountFileMenu(host: HTMLElement, actions: FileMenuActions): { re
       action("+ New notebook…", async () => {
         close();
         await actions.createNew();
+      }),
+      action("Import .ipynb…", async () => {
+        close();
+        await actions.importIpynb();
       }),
       action("Rename current…", async () => {
         close();

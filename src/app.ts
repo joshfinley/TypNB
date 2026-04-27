@@ -45,6 +45,7 @@ import {
   setActivePath,
 } from "./app/files.ts";
 import { mountFileMenu } from "./app/file-menu.ts";
+import { ipynbToTypst } from "./app/import-ipynb.ts";
 
 /** Debounce after the last keystroke before kicking the orchestrator. */
 const PARSE_DEBOUNCE_MS = 300;
@@ -334,6 +335,55 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     fileMenu.refresh();
   }
 
+  async function importIpynb(): Promise<void> {
+    // Open a hidden file input. Once the user picks a file, read it, run
+    // the converter, and create a notebook from the result. Name comes
+    // from the .ipynb filename (with a numeric suffix if it collides).
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".ipynb,application/x-ipynb+json,application/json";
+    input.style.display = "none";
+    document.body.appendChild(input);
+    try {
+      const file = await new Promise<File | null>((resolve) => {
+        input.addEventListener("change", () => resolve(input.files?.[0] ?? null), {
+          once: true,
+        });
+        // If the user dismisses the picker without choosing a file, no
+        // change event fires. Listen for the focus return as a fallback.
+        const onFocus = () => {
+          // Give the change listener a chance first.
+          setTimeout(() => resolve(input.files?.[0] ?? null), 100);
+          window.removeEventListener("focus", onFocus);
+        };
+        window.addEventListener("focus", onFocus);
+        input.click();
+      });
+      if (!file) return;
+      const text = await file.text();
+      let typst: string;
+      try {
+        typst = ipynbToTypst(JSON.parse(text));
+      } catch (err) {
+        window.alert(`Couldn't import: ${(err as Error).message}`);
+        return;
+      }
+      // Pick a path — start from the file's basename, append -1, -2 etc.
+      // until we find a free slot.
+      const baseName = file.name.replace(/\.ipynb$/, "");
+      let candidate = `/${baseName}.typ`;
+      let n = 1;
+      while (await fs.exists(candidate)) {
+        candidate = `/${baseName}-${n}.typ`;
+        n += 1;
+      }
+      await createNotebook(fs, candidate, typst);
+      await switchToFile(candidate);
+    } finally {
+      input.remove();
+    }
+  }
+
   async function deleteCurrent(): Promise<void> {
     const ok = window.confirm(`Delete ${nameFromPath(currentPath)}? This cannot be undone.`);
     if (!ok) return;
@@ -360,6 +410,7 @@ export async function mountApp(root: HTMLElement): Promise<void> {
     currentPath: () => currentPath,
     open: switchToFile,
     createNew: createNewNotebook,
+    importIpynb,
     renameCurrent,
     deleteCurrent,
   });
